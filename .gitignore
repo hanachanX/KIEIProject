@@ -1,0 +1,39 @@
+# --- 秘密情報（APIキーなど）。絶対に公開しない ---
+config.json
+*.key
+.env
+
+# --- 実行すると自動でできるファイル ---
+__pycache__/
+*.pyc
+*.pyo
+error.log
+*_log.txt
+*.bak
+
+# --- 個人の作業データ ---
+tsume_state.json
+tsume_inbox/
+*.kif.tmp
+
+# --- データを作り直すための作業用ツール（利用者には不要） ---
+make_classics_db.py
+make_classics_db.bat
+
+# --- 開発環境 ---
+.vscode/
+.idea/
+venv/
+.venv/
+*.egg-info/
+build/
+dist/
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# --- 使わなくなったフォント（Yuji Syuku だけ使う） ---
+fonts/ShipporiMincho*
+fonts/OFL_ShipporiMincho.txt
