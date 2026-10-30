@@ -10,11 +10,11 @@ import time
 import traceback
 
 from PyQt6.QtCore import QBuffer, QTimer, QByteArray, QIODevice, QPointF, QObject, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QFont, QKeySequence, QLinearGradient, QPainter, QPen, QPolygonF, QShortcut
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QDialogButtonBox, QFileDialog, QFormLayout,
+from PyQt6.QtGui import QColor, QCursor, QFont, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPolygonF, QShortcut
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout,
                              QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow,
-                             QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QTabWidget, QTextBrowser, QTextEdit,
-                             QToolTip, QVBoxLayout, QWidget)
+                             QMenu, QMessageBox, QPlainTextEdit, QPushButton as NativePushButton, QSpinBox, QSplitter, QTabWidget, QTextBrowser, QTextEdit,
+                             QToolTip, QStyle, QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget)
 import shogi
 
 import core
@@ -53,6 +53,90 @@ def kiei_fonts():
         _FONTS["brush"] = brush
     return _FONTS["brush"]
 FONT_FAMILIES = ["Yu Gothic UI", "Meiryo UI", "Meiryo", "MS Gothic", "Noto Sans CJK JP"]
+
+
+class QPushButton(NativePushButton):
+    """棋慧専用の切り角ボタン。クリック・メニュー・キー操作はQtに任せる。"""
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        enabled = self.isEnabled()
+        pressed = self.isDown()
+        hovered = self.underMouse() and enabled
+        selected = self.isChecked()
+        primary = self.property("role") == "primary"
+        stop = self.property("role") == "stop"
+        # Existing local styles (e.g. the active tsume mode) retain their colors.
+        local_style = bool(self.styleSheet())
+        ink = QColor("#3d3931")
+        paper = QColor("#faf7ee")
+        edge = QColor("#c8bfab")
+        accent = QColor("#ac8745")
+        if primary:
+            paper, ink, edge = QColor("#315643"), QColor("#fff9e9"), QColor("#264536")
+            accent = QColor("#d5b46d")
+        elif selected:
+            paper, ink, edge = QColor("#e2eadf"), QColor("#264734"), QColor("#77917b")
+            accent = QColor("#46704e")
+        elif stop:
+            ink, accent = QColor("#974c40"), QColor("#b97662")
+        if local_style:
+            paper = option.palette.color(QPalette.ColorRole.Button)
+            ink = option.palette.color(QPalette.ColorRole.ButtonText)
+            edge = paper.darker(120)
+        if not enabled:
+            paper, ink, edge, accent = (QColor(c) for c in ("#efede6", "#a5a095", "#ddd8cc", "#d0c9ba"))
+        elif pressed:
+            paper = paper.darker(110)
+            edge = accent
+        elif hovered:
+            paper = paper.lighter(114) if primary else QColor("#f1ebdb") if not selected and not local_style else paper.lighter(104)
+            edge = accent
+        if self.isDefault() and enabled:
+            edge = accent
+
+        painter = QStylePainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        box = QRectF(self.rect()).adjusted(0.75, 0.75, -0.75, -0.75)
+        cut = min(6.0, box.height() / 5)
+        path = QPainterPath()
+        path.moveTo(box.left() + 3, box.top())
+        path.lineTo(box.right() - cut, box.top())
+        path.lineTo(box.right(), box.top() + cut)
+        path.lineTo(box.right(), box.bottom() - 3)
+        path.quadTo(box.right(), box.bottom(), box.right() - 3, box.bottom())
+        path.lineTo(box.left() + cut, box.bottom())
+        path.lineTo(box.left(), box.bottom() - cut)
+        path.lineTo(box.left(), box.top() + 3)
+        path.quadTo(box.left(), box.top(), box.left() + 3, box.top())
+        path.closeSubpath()
+        wash = QLinearGradient(box.topLeft(), box.bottomLeft())
+        wash.setColorAt(0, paper.lighter(103) if enabled and not pressed else paper)
+        wash.setColorAt(1, paper)
+        painter.fillPath(path, wash)
+        painter.setPen(QPen(edge, 1.0))
+        painter.drawPath(path)
+        # A short brass inlay, kept outside the normal label area.
+        painter.setPen(QPen(accent, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(box.left() + 5, box.center().y() - 5),
+                         QPointF(box.left() + 5, box.center().y() + 5))
+        if self.hasFocus() and enabled:
+            painter.setPen(QPen(accent, 1.0, Qt.PenStyle.DotLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(box.adjusted(3, 3, -3, -3), 2, 2)
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive, QPalette.ColorGroup.Disabled):
+            option.palette.setColor(group, QPalette.ColorRole.ButtonText, ink)
+        # Qt draws text, mnemonics, icons and menu arrows, including the disabled state.
+        painter.drawControl(QStyle.ControlElement.CE_PushButtonLabel, option)
 
 
 def save_config(cfg):
@@ -684,12 +768,6 @@ class SettingsDialog(QDialog):
         self.tsec.setToolTip("詰将棋モードで、玉方の応手を決めるときの1局面あたりの制限時間(秒)")
         form.addRow("詰将棋の応手を考える時間(秒)", self.tsec)
 
-        self.evaldir = QLineEdit(str(opts.pop("EvalDir", "")))
-        self.evaldir.setPlaceholderText("評価関数（nn.bin）のあるフォルダ。空欄なら指定しない")
-        b2 = QPushButton("参照…")
-        b2.clicked.connect(self._pick_dir)
-        form.addRow("評価関数フォルダ", self._row(self.evaldir, b2))
-
         self.threads = QSpinBox()
         self.threads.setRange(1, 256)
         self.threads.setValue(int(opts.pop("Threads", 4)))
@@ -700,7 +778,7 @@ class SettingsDialog(QDialog):
         form.addRow("ハッシュ(MB)", self.hash)
 
         self.extra = QPlainTextEdit("\n".join(f"{k}={v}" for k, v in opts.items()))
-        self.extra.setPlaceholderText("追加のエンジン設定を1行に1つ「名前=値」で書く（例：FV_SCALE=24）")
+        self.extra.setPlaceholderText("追加のエンジン設定を1行に1つ「名前=値」で書く（例：FV_SCALE=24）。評価関数(nn.bin)は、エンジンのexeの隣の eval フォルダに置けば自動で読まれます")
         self.extra.setFixedHeight(70)
         form.addRow("追加オプション", self.extra)
 
@@ -793,15 +871,8 @@ class SettingsDialog(QDialog):
         if path:
             self.tengine.setText(path)
 
-    def _pick_dir(self):
-        path = QFileDialog.getExistingDirectory(self, "評価関数のフォルダを選ぶ")
-        if path:
-            self.evaldir.setText(path)
-
     def apply_to(self, cfg):
         opts = {"Threads": self.threads.value(), "USI_Hash": self.hash.value()}
-        if self.evaldir.text().strip():
-            opts["EvalDir"] = self.evaldir.text().strip()
         for line in self.extra.toPlainText().splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
@@ -852,7 +923,8 @@ class EvalGraph(QWidget):
         self.goods = {}             # 手数 -> {"grade":..}（好手・妙手）
         self.cursor = 0
         self.tipfn = None
-        self.msg = "「全局を解析」を押すと、一局の評価値グラフが出ます"
+        self.min_n = 0              # 観戦中は、手数の目盛りを固定して、右へ伸びていくようにする
+        self.msg = "検討しながら指していくと、ここに評価値のグラフが伸びていきます"
 
     def set_data(self, data, marks=None, goods=None):
         self.data, self.marks, self.goods = data, (marks or {}), (goods or {})
@@ -894,7 +966,7 @@ class EvalGraph(QWidget):
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.msg)
             p.end()
             return
-        n = len(d) - 1
+        n = max(len(d) - 1, self.min_n)
         pts = [(i, e["v"]) for i, e in enumerate(d) if e is not None]
         zero = top + h / 2
         # 面（上は先手側＝青、下は後手側＝赤）
@@ -928,6 +1000,13 @@ class EvalGraph(QWidget):
                 p.setBrush(QColor(10, 125, 50) if big else QColor(70, 190, 100))
                 p.setPen(QPen(QColor(60, 60, 60), 1))
                 p.drawEllipse(QPointF(self._x(i, n, left, w), self._y(d[i]["v"], top, h)), 5 if big else 4, 5 if big else 4)
+        if self.min_n:
+            p.setPen(QColor(150, 150, 150))
+            for k in range(20, n + 1, 20):
+                xk = self._x(k, n, left, w)
+                p.drawLine(QPointF(xk, top + h - 3), QPointF(xk, top + h))
+                if xk < left + w - 34:
+                    p.drawText(QPointF(xk + 2, top + h - 4), f"{k}手")
         cx = self._x(min(self.cursor, n), n, left, w)
         p.setPen(QPen(QColor(210, 40, 40), 1.4))
         p.drawLine(QPointF(cx, top), QPointF(cx, top + h))
@@ -937,8 +1016,8 @@ class EvalGraph(QWidget):
         if not self.data or len(self.data) < 2:
             return None
         left, top, w, h = self._geom()
-        n = len(self.data) - 1
-        return max(0, min(n, round((x - left) / w * n))) if w > 0 else None
+        n = max(len(self.data) - 1, self.min_n)
+        return max(0, min(len(self.data) - 1, round((x - left) / w * n))) if w > 0 else None
 
     def mousePressEvent(self, ev):
         i = self._ply_at(ev.position().x())
@@ -1023,7 +1102,6 @@ class MainWindow(QMainWindow):
         self.graph.plotClicked.connect(self.go_to_ply)
         self.graph.tipfn = self.graph_tip
         lv.addWidget(self.graph)
-        nav3 = QHBoxLayout()
         self.btn_game = QPushButton("全局を解析（評価値グラフ）")
         self.btn_game.setToolTip("読み込んだ棋譜の全局面をエンジンで解析し、評価値のグラフを出します。もう一度押すと中止します")
         self.btn_game.clicked.connect(self.toggle_game_analysis)
@@ -1038,15 +1116,9 @@ class MainWindow(QMainWindow):
                                  "詳細＝候補3つで解析（好手・妙手・エンジン一致を出します。1手あたりの時間は1.5倍）")
         self.mode_box.setCurrentIndex(1 if self.cfg.get("game_mode") == "detail" else 0)
         self.mode_box.currentIndexChanged.connect(self.on_mode_changed)
-        nav3.addWidget(self.btn_game)
-        nav3.addWidget(self.mode_box)
-        nav3.addWidget(self.btn_open_eval)
         self.btn_review = QPushButton("全局をAIで講評")
         self.btn_review.setToolTip("全局解析の結果（評価値の流れと勝負所）を、設定で選んだAIに渡して、一局の講評を書いてもらいます")
         self.btn_review.clicked.connect(self.review_game)
-        nav3.addWidget(self.btn_review)
-        nav3.addWidget(self.game_label, 1)
-        lv.addLayout(nav3)
         self.var_widget = QWidget()
         varrow = QHBoxLayout(self.var_widget)
         varrow.setContentsMargins(0, 0, 0, 0)
@@ -1069,7 +1141,7 @@ class MainWindow(QMainWindow):
         mb0 = QPushButton("貼り付け")
         mb0.setToolTip("クリップボードの文字を見て、SFEN・棋譜（KIF）のどちらかを自動で判別して読み込みます")
         mb0.clicked.connect(self.paste_auto)
-        nav.addWidget(mb0)
+        kifu_btns = [mb0]
         for title, items in [("コピー", [("SFENをコピー", self.copy_sfen), ("KIFをコピー", self.copy_kif)]),
                              ("ファイル", [("KIFを読み込む…", self.open_kif), ("KIFを保存…", self.save_kif)])]:
             mb = QPushButton(title)
@@ -1077,15 +1149,26 @@ class MainWindow(QMainWindow):
             for t, fn in items:
                 m.addAction(t, fn)
             mb.setMenu(m)
-            nav.addWidget(mb)
+            kifu_btns.append(mb)
         self.btn_tsume = QPushButton("詰将棋")
         self.btn_tsume.setToolTip("詰将棋の問題一覧を開きます")
         self.btn_tsume.clicked.connect(self.open_tsume)
-        nav.addWidget(self.btn_tsume)
+        self.btn_main = QPushButton("元の手順へ戻る")
+        self.btn_main.setToolTip("棋譜の途中から別の手を指して枝分かれしたあと、元の棋譜の手順に戻ります")
+        self.btn_main.clicked.connect(self.back_to_main)
+        self.btn_main.hide()
+        nav.addWidget(self.btn_main)
         lv.addLayout(nav)
         nav2 = QHBoxLayout()
         self.btn_shot = QPushButton("スクショ→局面（クリップボードの画像）")
         self.btn_shot.clicked.connect(lambda: self.import_screenshot())
+        self.btn_zumen = QPushButton("図→局面（画像）")
+        self.btn_zumen.setToolTip("Webページ・棋書・論文などの盤面の図（画像）から局面を読み取ります。"
+                                  "画像をコピーしてからボタンを押すか、画像ファイルを選びます（将棋ソフトの画面は対象外）")
+        self.btn_zumen.clicked.connect(self.import_diagram)
+        self.btn_zumen_out = QPushButton("局面→図（画像）")
+        self.btn_zumen_out.setToolTip("いまの盤の局面を、棋書のような盤面の図（画像）にして、コピーまたは保存します。")
+        self.btn_zumen_out.clicked.connect(self.export_diagram)
         self.btn_cap = QPushButton("画面を撮影→局面")
         self.btn_cap.setToolTip("このウィンドウを隠してから画面全体を撮影し、読み取ります（棋桜を全画面にしておく）")
         self.btn_cap.clicked.connect(self.capture_screen)
@@ -1106,9 +1189,45 @@ class MainWindow(QMainWindow):
         self.btn_mate_apply.setEnabled(False)
         self.btn_mate_apply.clicked.connect(self.apply_mate_line)
         self.last_mate = None
-        for b in (self.btn_shot, self.btn_cap, self.btn_edit, self.btn_tsumehai, btn_turn, self.btn_mate, self.btn_mate_apply):
-            nav2.addWidget(b)
-        lv.addLayout(nav2)
+
+        # 盤の下の操作は、使う場面ごとのタブにまとめる（常に見えるのは「最初・戻る・進む…」の並びだけ）
+        def page(rows):
+            w = QWidget()
+            g = QGridLayout(w)
+            g.setContentsMargins(4, 6, 4, 4)
+            g.setSpacing(6)
+            for r, items in enumerate(rows):
+                for c, it in enumerate(items):
+                    if it is not None:
+                        g.addWidget(it, r, c)
+            g.setColumnStretch(8, 1)
+            return w
+        self.btn_shot.setText("スクショ→局面")
+        self.btn_shot.setToolTip("コピーした画面の画像（スクリーンショット）から、棋桜の局面を読み取ります")
+        self.btn_cap.setText("画面を撮影")
+        self.tools = QTabWidget()
+        self.tools.setDocumentMode(True)
+        self.btn_watch = QPushButton("観戦モード")
+        self.btn_watch.setCheckable(True)
+        self.btn_watch.setToolTip("中継を見ながら、手が進むたびに評価値グラフを伸ばします。\n"
+                                  "・中継サイトの「棋譜コピー」(KIF)でコピーするだけで、自動で読み込みます\n"
+                                  "・盤で1手ずつ指しても、グラフが伸びます\n"
+                                  "観戦用です。自分が対局中の局面の解析には使わないでください")
+        self.btn_watch.toggled.connect(self.toggle_watch)
+        self.watching = False
+        self.orig_line = None               # 棋譜の途中から別の手を指したとき、元の手順を覚えておく
+        self.tsume_shown = None             # 答えを盤に出した詰将棋（帯を残すため）
+        self.live_evals = {}                # 検討した局面(SFEN)ごとの評価値。グラフが伸びていくのに使う
+        self._watch_timer = QTimer(self)
+        self._watch_timer.timeout.connect(self._watch_tick)
+        self.tools.addTab(page([kifu_btns, [self.btn_game, self.mode_box, self.btn_open_eval, self.btn_review],
+                                [self.btn_watch]]), "棋譜・解析")
+        self.tools.addTab(page([[self.btn_zumen, self.btn_zumen_out, self.btn_shot, self.btn_cap],
+                                [self.btn_edit, btn_turn, self.btn_tsumehai]]), "局面を作る")
+        self.tools.addTab(page([[self.btn_tsume, self.btn_mate, self.btn_mate_apply]]), "詰将棋")
+        self.tools.setMaximumHeight(160)
+        lv.addWidget(self.tools)
+        lv.addWidget(self.game_label)
         self.boardw.positionEdited.connect(self.on_position_edited)
         self.sig.shot.connect(self.on_shot)
         self.sig.shot_err.connect(self.on_shot_err)
@@ -1139,8 +1258,10 @@ class MainWindow(QMainWindow):
 
         row = QHBoxLayout()
         self.btn_go = QPushButton("検討開始")
+        self.btn_go.setProperty("role", "primary")
         self.btn_go.clicked.connect(lambda: self.request_analysis())
         self.btn_stop = QPushButton("停止")
+        self.btn_stop.setProperty("role", "stop")
         self.btn_stop.clicked.connect(self.stop_analysis)
         self.auto = QCheckBox("自動で検討")
         self.auto.setChecked(True)
@@ -1161,14 +1282,15 @@ class MainWindow(QMainWindow):
 
         row2 = QHBoxLayout()
         self.btn_explain = QPushButton("解説する")
+        self.btn_explain.setProperty("role", "primary")
         self.btn_explain.clicked.connect(self.explain)
-        self.btn_copy = QPushButton("文章をコピー")
-        self.btn_copy.clicked.connect(self.copy_prompt)
-        self.btn_open_saved = QPushButton("保存した解説を開く…")
-        self.btn_open_saved.clicked.connect(self.open_saved)
+        more = QPushButton("その他")
+        mm = QMenu(more)
+        mm.addAction("文章をコピー", self.copy_prompt)
+        mm.addAction("保存した解説を開く…", self.open_saved)
+        more.setMenu(mm)
         row2.addWidget(self.btn_explain, 1)
-        row2.addWidget(self.btn_copy)
-        row2.addWidget(self.btn_open_saved)
+        row2.addWidget(more)
         rv.addLayout(row2)
 
         self.result = QTextEdit()
@@ -1270,15 +1392,29 @@ class MainWindow(QMainWindow):
                 p = t["prob"]
                 self.tsume_banner.setText(f"◆ 詰将棋モード　{p.get('title', '')}　{p['steps']}手詰　先手（攻方）の王手の連続で詰ませてください")
                 self.tsume_banner.show()
+                self.graph.hide()                     # 詰将棋では評価値グラフを出さない
                 self.btn_tsume.setStyleSheet("background:#d9480f; color:white; font-weight:bold;")
             else:
-                self.tsume_banner.hide()
+                shown = getattr(self, "tsume_shown", None)
+                if shown and shown[1] == self.start_sfen:     # 答え・詰み手順を盤に出している間は、帯を残す
+                    p = shown[0]
+                    self.tsume_banner.setText(f"◆ 詰将棋　{p.get('title', '')}　{p['steps']}手詰　解答を表示中（▶キーで1手ずつ進められます）")
+                    self.tsume_banner.show()
+                    self.graph.hide()
+                else:
+                    self.tsume_banner.hide()
+                    self.graph.show()
                 self.btn_tsume.setStyleSheet("")
         except Exception:
             pass
 
     def refresh(self, analyze=True):
         self.update_tsume_banner()
+        try:
+            ol = self.orig_line
+            self.btn_main.setVisible(bool(ol) and ol[0] == self.start_sfen and self.moves != ol[1] and not self.tsume)
+        except Exception:
+            pass
         self.gen += 1
         if self.tsume:
             analyze = False
@@ -1580,9 +1716,25 @@ class MainWindow(QMainWindow):
         if self.tsume:
             self.tsume_user_move(usi)
             return
+        if self.cursor < len(self.moves):
+            if self.moves[self.cursor] == usi:           # 棋譜と同じ手なら、先へ進めるだけ（後ろを消さない）
+                self.cursor += 1
+                self.refresh()
+                return
+            if self.orig_line is None:                   # 棋譜と違う手：元の手順を覚えてから、枝分かれさせる
+                self.orig_line = (self.start_sfen, list(self.moves), self.cursor)
         self.moves = self.moves[:self.cursor] + [usi]
         self.cursor += 1
         self.refresh()
+
+    def back_to_main(self):
+        """枝分かれする前の手順（元の棋譜）に戻る。分かれ目の局面まで戻して、▶で進められるようにする。"""
+        if not self.orig_line:
+            return
+        sfen, moves, bp = self.orig_line
+        self.start_sfen, self.moves, self.cursor = sfen, list(moves), bp
+        self.refresh()
+        self.status.setText("元の手順に戻しました（分かれ目の局面です。▶で進めてください）")
 
     def go_to_ply(self, ply):
         self.cursor = max(0, min(len(self.moves), int(ply)))
@@ -1621,6 +1773,7 @@ class MainWindow(QMainWindow):
     def reset_board(self):
         self.tsume = None
         self.set_variations(None)
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor = shogi.STARTING_SFEN, [], 0
         self.names = ["先手", "後手"]
         self.refresh()
@@ -1641,6 +1794,7 @@ class MainWindow(QMainWindow):
             return
         self.tsume = None
         self.set_variations(None)
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor = s, [], 0
         self.refresh()
 
@@ -1654,6 +1808,7 @@ class MainWindow(QMainWindow):
         if kind == "sfen":
             self.tsume = None
             self.set_variations(None)
+            self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
             self.start_sfen, self.moves = data["sfen"], list(data["moves"])
             self.cursor = len(self.moves)
             self.refresh()
@@ -1663,9 +1818,7 @@ class MainWindow(QMainWindow):
         elif kind == "error":
             QMessageBox.warning(self, "読み込めません", data)
         else:
-            QMessageBox.information(self, "貼り付けできません",
-                                    "クリップボードの文字は、SFENでも棋譜（KIF）でもないようです。\n\n"
-                                    "SFENは「9/9/…/9 b 持駒 1」のような1行の文字、棋譜は柿木将棋・KENTOのKIFの文章です。")
+            QMessageBox.information(self, "貼り付けできません", "SFENでもKIFでもありません。")
 
     def copy_sfen(self):
         QApplication.clipboard().setText(self.cur_board.sfen())
@@ -1786,6 +1939,7 @@ class MainWindow(QMainWindow):
     def _apply_game(self, game, from_clip=False):
         self.tsume = None
         self.set_variations(game)
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.names = game["sfen"], game["moves"], game["names"]
         self.kif_comments = dict(game.get("comments") or {})
         self.kif_comment_sfen, self.kif_comment_moves = game["sfen"], list(game["moves"])
@@ -1853,6 +2007,7 @@ class MainWindow(QMainWindow):
         self.tsume = {"prob": p, "line": p["line"], "busy": False, "hint": 0, "pending": None}
         self.tsume_seq += 1
         self.set_variations(None)
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor = p["sfen"], [], 0
         self.names = ["先手", "後手"]
         self.kif_comments, self.kif_comment_sfen, self.kif_comment_moves = {}, p["sfen"], []
@@ -2095,6 +2250,7 @@ class MainWindow(QMainWindow):
         t = self.tsume
         line = list(t["line"])
         self.tsume = None
+        self.tsume_shown = (t["prob"], self.start_sfen)        # 答えを見たあとも、詰将棋の画面だと分かるようにする
         self.tsume_seq += 1
         self.moves, self.cursor = line, 0
         self.refresh(analyze=False)
@@ -2162,8 +2318,160 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def export_diagram(self):
+        """いま盤にある局面を、棋書のような盤面の図（画像）にして、コピーまたは保存する。"""
+        from PyQt6.QtGui import QImage
+        board = self.boardw.board
+        cell = 64
+        mx, my = int(cell * 2.0), int(cell * 1.2)
+        W, H = int(9 * cell + 2 * mx), int(9 * cell + 2 * my)
+        img = QImage(W, H, QImage.Format.Format_RGB32)
+        img.fill(QColor("white"))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        ink = QColor("#111111")
+        p.setPen(QPen(ink, 2.0))
+        bx, by = mx, my
+        for i in range(10):
+            lw = 3.0 if i in (0, 9) else 1.4
+            p.setPen(QPen(ink, lw))
+            p.drawLine(QPointF(bx, by + i * cell), QPointF(bx + 9 * cell, by + i * cell))
+            p.drawLine(QPointF(bx + i * cell, by), QPointF(bx + i * cell, by + 9 * cell))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ink)
+        for (cx, cy) in [(3, 3), (6, 3), (3, 6), (6, 6)]:
+            p.drawEllipse(QPointF(bx + cx * cell, by + cy * cell), 3.2, 3.2)
+        fam = kiei_fonts()
+        # 筋・段の数字
+        f = QFont(fam)
+        f.setPixelSize(int(cell * 0.30))
+        p.setFont(f)
+        p.setPen(ink)
+        for i in range(9):
+            p.drawText(QRectF(bx + i * cell, by - 0.55 * cell, cell, 0.45 * cell), Qt.AlignmentFlag.AlignCenter, core.FILE_ZEN[9 - i])
+            p.drawText(QRectF(bx + 9 * cell + 6, by + i * cell, 0.5 * cell, cell), Qt.AlignmentFlag.AlignCenter, core.RANK_KAN[i + 1])
+
+        def glyph(cx, cy, size, text, rot, red=False):
+            p.save()
+            p.translate(cx, cy)
+            if rot:
+                p.rotate(180)
+            ff = QFont(fam)
+            ff.setPixelSize(int(size))
+            p.setFont(ff)
+            p.setPen(QColor("#111111"))
+            rect = QRectF(-size, -size, 2 * size, 2 * size)
+            d = max(0.4, 0.012 * size)
+            for dx, dy in ((-d, 0), (d, 0), (0, -d), (0, d)):
+                p.drawText(rect.translated(dx, dy), Qt.AlignmentFlag.AlignCenter, text)
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+            p.restore()
+
+        for sq in range(81):
+            pc = board.piece_at(sq)
+            if pc is None:
+                continue
+            col, row = sq % 9, sq // 9              # 左端が9筋、上端が一段目
+            glyph(bx + (col + 0.5) * cell, by + (row + 0.52) * cell, cell * 0.68,
+                  core.BOARD_NAME[pc.symbol().upper()],
+                  pc.color == shogi.WHITE)
+        # 持ち駒：盤の左右にたて書き（右が先手・正立、左が後手・逆さ）。2枚以上は駒の下に算用数字
+        order = [shogi.ROOK, shogi.BISHOP, shogi.GOLD, shogi.SILVER, shogi.KNIGHT, shogi.LANCE, shogi.PAWN]
+        for color, cx0 in ((shogi.BLACK, bx + 9 * cell + 1.25 * cell), (shogi.WHITE, bx - 1.25 * cell)):
+            items = []
+            for pt in order:
+                n = board.pieces_in_hand[color].get(pt, 0)
+                if n > 0:
+                    items.append((shogi.Piece(pt, shogi.BLACK).symbol().upper(), n))
+            if not items:
+                continue
+            rot = color == shogi.WHITE
+            p.save()
+            p.translate(cx0, by + 4.5 * cell)
+            if rot:
+                p.rotate(180)
+            y = -4.5 * cell + 0.35 * cell
+            for sym, n in items:
+                glyph(0, y, cell * 0.5, core.BOARD_NAME[sym], False)
+                y += 0.55 * cell
+                if n > 1:
+                    glyph(0, y - 0.02 * cell, cell * 0.38, str(n), False)
+                    y += 0.45 * cell
+            p.restore()
+        p.end()
+
+        mb = QMessageBox(self)
+        mb.setWindowTitle("局面→図（画像）")
+        mb.setText("いまの局面を、盤面の図（画像）にします。どうしますか？")
+        b_clip = mb.addButton("コピーする", QMessageBox.ButtonRole.AcceptRole)
+        b_file = mb.addButton("ファイルに保存", QMessageBox.ButtonRole.ActionRole)
+        mb.addButton("やめる", QMessageBox.ButtonRole.RejectRole)
+        mb.exec()
+        c = mb.clickedButton()
+        if c is b_clip:
+            QApplication.clipboard().setImage(img)
+            self.status.setText("盤面の図をコピーしました。メモ帳や文書・掲示板などに貼り付けられます")
+        elif c is b_file:
+            path, _ = QFileDialog.getSaveFileName(self, "図を保存", "局面図.png", "PNG画像 (*.png)")
+            if path:
+                if not path.lower().endswith(".png"):
+                    path += ".png"
+                if img.save(path):
+                    self.status.setText("盤面の図を保存しました：" + path)
+                else:
+                    QMessageBox.warning(self, "保存できません", "保存に失敗しました。")
+
+    def import_diagram(self):
+        """盤面の図（画像）から局面を読み取る。クリップボードに画像があればそれを、無ければ画像ファイルを選ぶ。"""
+        from PyQt6.QtGui import QImage
+        img = QApplication.clipboard().image()
+        if img is not None and not img.isNull():
+            mb = QMessageBox(self)
+            mb.setWindowTitle("図の読み込み")
+            mb.setText("コピーしてある画像があります。どちらを読み取りますか？")
+            b_clip = mb.addButton("コピーした画像", QMessageBox.ButtonRole.AcceptRole)
+            b_file = mb.addButton("ファイルを選ぶ", QMessageBox.ButtonRole.ActionRole)
+            mb.addButton("やめる", QMessageBox.ButtonRole.RejectRole)
+            mb.exec()
+            c = mb.clickedButton()
+            if c is b_file:
+                img = None
+            elif c is not b_clip:
+                return
+        if img is None or img.isNull():
+            path, _ = QFileDialog.getOpenFileName(self, "盤面の図（画像）を選ぶ", "", "画像 (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;すべて (*)")
+            if not path:
+                return
+            img = QImage(path)
+            if img.isNull():
+                QMessageBox.warning(self, "読み込めません", "画像として開けませんでした。")
+                return
+        try:
+            import numpy as np
+            import zumen
+            img = img.convertToFormat(QImage.Format.Format_RGB888)
+            w, h = img.width(), img.height()
+            buf = img.constBits()
+            buf.setsize(img.sizeInBytes())
+            arr = np.frombuffer(buf, np.uint8).reshape(h, img.bytesPerLine())[:, :w * 3].reshape(h, w, 3)
+            bgr = arr[:, :, ::-1].copy()
+            res = zumen.read_diagram(bgr)
+            shogi.Board(res["sfen"])
+        except Exception as e:
+            QMessageBox.warning(self, "図を読み取れません", str(e))
+            return
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
+        self.start_sfen, self.moves, self.cursor, self.names = res["sfen"], [], 0, ["先手", "後手"]
+        self.tsume = None
+        self.refresh(analyze=False)
+        if res["notes"]:
+            QMessageBox.information(self, "読み取り結果の確認", "局面を読み込みました。次の点を確認してください。\n\n・"
+                                    + "\n・".join(res["notes"]) + "\n\n間違いがあれば「編集モード」で直せます。")
+        self.status.setText("図から局面を読み取りました。駒や持ち駒が合っているか確認してください（手番は先手番にしてあります）")
+
     def on_shot(self, result):
         self.btn_shot.setEnabled(True)
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor, self.names = result["sfen"], [], 0, ["先手", "後手"]
         self.refresh(analyze=not self.btn_edit.isChecked())
         lines = ["・" + t for _, t in result["messages"]]
@@ -2190,6 +2498,7 @@ class MainWindow(QMainWindow):
     def set_tsume_layout(self):
         """柿木将棋の「詰将棋用配置」：盤上は後手玉(5一)のみ、残りの駒は全部玉方の持ち駒。攻方の玉は無し。"""
         sfen = "4k4/9/9/9/9/9/9/9/9 b 2r2b4g4s4n4l18p 1"
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor, self.names = sfen, [], 0, ["先手", "後手"]
         self.btn_edit.setChecked(True)
         self.refresh(analyze=False)
@@ -2200,11 +2509,13 @@ class MainWindow(QMainWindow):
             shogi.Board(sfen)
         except Exception:
             return
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor, self.names = sfen, [], 0, ["先手", "後手"]
         self.refresh(analyze=not self.btn_edit.isChecked())
 
     def toggle_turn(self):
         cells, hands, turn = core.board_to_model(self.cur_board)
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor = core.model_to_sfen(cells, hands, 1 - turn), [], 0
         self.refresh(analyze=not self.btn_edit.isChecked())
 
@@ -2232,7 +2543,20 @@ class MainWindow(QMainWindow):
             eng.stop()
             eng.close()
 
+    @staticmethod
+    def _no_king(board):
+        """玉が片方でも盤上に無い局面（詰将棋の形）。通常のエンジンは、こういう局面を読めず落ちてしまう。"""
+        try:
+            return board.king_squares[shogi.BLACK] is None or board.king_squares[shogi.WHITE] is None
+        except Exception:
+            return False
+
     def request_analysis(self, explain_after=False):
+        if self._no_king(self.cur_board):
+            self.analyzing = False
+            self.cands, self.cands_final = [], False
+            self.status.setText("玉が盤上に1枚しかない局面（詰将棋の形）です。通常の検討はできません。「詰将棋」タブの「詰みを探す」を使ってください")
+            return
         if safe(self.cur_board.is_checkmate):
             self.status.setText("詰みの局面です")
             return
@@ -2339,10 +2663,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "取り込めません", str(e))
             return
+        _prob = self.tsume["prob"] if self.tsume else None
         self.tsume = None
         self.tsume_seq += 1
         self.set_variations(None)
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor = sfen, list(pv), 0
+        self.tsume_shown = (_prob, sfen) if _prob else None
         self.names = ["先手", "後手"]
         self.kif_comments, self.kif_comment_sfen, self.kif_comment_moves = {}, sfen, []
         self.kif_senkei = ("", "")
@@ -2369,7 +2696,7 @@ class MainWindow(QMainWindow):
             if first["n"] and first["n"] != n:
                 text += [f"（エンジンは詰みまで{first['n']}手と報告。表示できた手順は{n}手分です）", ""]
             if r.get("engine") == "KomoringHeights":
-                text += ["詰将棋専用エンジン（KomoringHeights）の手順（最短の詰み）：", "", core.pv_ja(b, pv, n), ""]
+                text += ["詰将棋専用エンジン（KomoringHeights）の手順（最短とは限りません）：", "", core.pv_ja(b, pv, n), ""]
             else:
                 text += ["エンジンの手順（最短とは限りません）：", "", core.pv_ja(b, pv, n), ""]
             if first["king"]:
@@ -2410,6 +2737,9 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------- 全局解析・評価値グラフ
     def sync_eval_graph(self):
         """棋譜が変わったらグラフを入れ替える（保存済みの解析結果があればそれを出す）。カーソルを合わせる。"""
+        if getattr(self, "watching", False):
+            self.graph.set_cursor(self.cursor)
+            return
         key = core.game_key(self.start_sfen, self.moves) if self.moves else None
         if key != self.eval_key:
             if self.game_running:
@@ -2431,6 +2761,7 @@ class MainWindow(QMainWindow):
             self.graph.set_data(self.evals, self.swings, self.goods)
             self.show_game_summary()
             self.refresh_move_list()
+        self._live_graph()
         self.graph.set_cursor(self.cursor)
 
     def _classify(self):
@@ -2470,6 +2801,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "開けません", str(e))
             return
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves = data["start_sfen"], list(data["moves"])
         self.names = list(data.get("names") or ["先手", "後手"])
         self.cursor = 0
@@ -2570,6 +2902,8 @@ class MainWindow(QMainWindow):
         return "\n".join(lines)
 
     def toggle_game_analysis(self):
+        if self.watching:
+            self._watch_off()
         if self.game_running:
             self.game_cancel.set()
             self._stop_game_engines()
@@ -2577,6 +2911,9 @@ class MainWindow(QMainWindow):
             return
         if not self.moves:
             QMessageBox.information(self, "案内", "指し手のある棋譜を読み込んでください（KIF読込／KIF貼付）。")
+            return
+        if self._no_king(shogi.Board(self.start_sfen)):
+            QMessageBox.information(self, "案内", "玉が盤上に1枚しかない局面（詰将棋の形）なので、全局解析はできません。")
             return
         key = core.game_key(self.start_sfen, self.moves)
         mode = self.game_mode()
@@ -2676,6 +3013,180 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ---------------------------------------------------------- 観戦モード（手が進むたびにグラフを伸ばす）
+    def toggle_watch(self, on):
+        if on:
+            if self.game_running:
+                QMessageBox.information(self, "案内", "全局解析の途中です。終わってから（または中止してから）観戦モードにしてください。")
+                self.btn_watch.blockSignals(True)
+                self.btn_watch.setChecked(False)
+                self.btn_watch.blockSignals(False)
+                return
+            if self._no_king(self.cur_board) or self._no_king(shogi.Board(self.start_sfen)):
+                QMessageBox.information(self, "案内", "玉が盤上に1枚しかない局面（詰将棋の形）では、観戦モードは使えません。")
+                self.btn_watch.blockSignals(True)
+                self.btn_watch.setChecked(False)
+                self.btn_watch.blockSignals(False)
+                return
+            if not self.cfg.get("engine_path"):
+                QMessageBox.information(self, "案内", "エンジンが登録されていません。右上の「設定…」から登録してください。")
+                self.btn_watch.blockSignals(True)
+                self.btn_watch.setChecked(False)
+                self.btn_watch.blockSignals(False)
+                return
+            self.watching = True
+            self._watch_lock = threading.Lock()
+            self._watch_stop = threading.Event()
+            self._watch_res, self._watch_err = {}, None
+            self._watch_sfens, self.watch_evals, self._watch_key = [], [], None
+            self._watch_clip = QApplication.clipboard().text()
+            self.graph.min_n = 60
+            self.graph.msg = "観戦中：中継の棋譜をコピーするか、盤で指すと、ここに評価値が伸びていきます"
+            self._watch_sync()
+            threading.Thread(target=self._watch_worker, daemon=True).start()
+            self._watch_timer.start(700)
+            self.game_label.setText("観戦モード：中継サイトの「棋譜コピー」を押すと、自動で読み込んで解析します")
+        else:
+            self._watch_off()
+
+    def _watch_off(self):
+        self.watching = False
+        self._watch_timer.stop()
+        try:
+            self._watch_stop.set()
+        except Exception:
+            pass
+        self.graph.min_n = 0
+        self.graph.msg = "検討しながら指していくと、ここに評価値のグラフが伸びていきます"
+        self.evals = None
+        self.eval_key = None
+        self.game_label.setText("")
+        self.btn_watch.blockSignals(True)
+        self.btn_watch.setChecked(False)
+        self.btn_watch.blockSignals(False)
+        self.sync_eval_graph()
+
+    def _watch_sync(self):
+        """棋譜（手）が変わったら、解析の記録を作り直す（同じ局面の結果は引き継ぐ）。"""
+        key = (self.start_sfen, tuple(self.moves))
+        if key == self._watch_key:
+            return
+        self._watch_key = key
+        try:
+            b = shogi.Board(self.start_sfen)
+            sfens = [b.sfen()]
+            for u in self.moves:
+                b.push(shogi.Move.from_usi(u))
+                sfens.append(b.sfen())
+        except Exception:
+            return
+        with self._watch_lock:
+            old_s, old_e = self._watch_sfens, self.watch_evals
+            new_e = [old_e[i] if (i < len(old_s) and old_s[i] == s) else None for i, s in enumerate(sfens)]
+            self._watch_sfens, self.watch_evals = sfens, new_e
+        self.evals = self.watch_evals
+        n = len(sfens) - 1
+        self.graph.min_n = max(60, (n // 20 + 1) * 20)
+
+    def _watch_tick(self):
+        if not self.watching:
+            return
+        if self._watch_err:
+            msg, self._watch_err = self._watch_err, None
+            self._watch_off()
+            QMessageBox.warning(self, "観戦モードを止めました", msg)
+            return
+        # 中継サイトの棋譜（KIF）がコピーされたら、自動で読み込む
+        try:
+            text = QApplication.clipboard().text()
+        except Exception:
+            text = self._watch_clip
+        if text != self._watch_clip:
+            self._watch_clip = text
+            if text and len(text) > 20:
+                kind, data = core.detect_clip(text)
+                if kind == "kif" and data.get("moves"):
+                    self._apply_game(data, from_clip=True)
+        self._watch_sync()
+        with self._watch_lock:
+            for i, s in enumerate(self._watch_sfens):
+                if self.watch_evals[i] is None and s in self._watch_res:
+                    self.watch_evals[i] = self._watch_res[s]
+            done = sum(1 for e in self.watch_evals if e)
+            total = len(self.watch_evals)
+        self.graph.set_data(self.watch_evals, {}, {})
+        self.graph.set_cursor(self.cursor)
+        self.game_label.setText(f"観戦中：{len(self.moves)}手　解析済み {done}/{total}局面")
+
+    def _watch_worker(self):
+        eng = None
+        try:
+            opts = dict(self.cfg.get("engine_options", {}))
+            opts["Threads"] = max(1, int(opts.get("Threads", 2)) // 2)
+            opts["USI_Hash"] = min(int(opts.get("USI_Hash", 256)), 256)
+            eng = core.UsiEngine(self.cfg.get("engine_path", ""), opts)
+            eng.start()
+            ms = max(self.game_ms("fast"), 1500)
+            while not self._watch_stop.is_set():
+                with self._watch_lock:
+                    todo = [(i, s) for i, s in enumerate(self._watch_sfens) if self.watch_evals[i] is None and s not in self._watch_res]
+                if not todo:
+                    time.sleep(0.3)
+                    continue
+                i, s = todo[-1]                  # いちばん新しい局面から先に解析する
+                e = core.eval_position(eng, s, ms, 1)
+                if self._watch_stop.is_set():
+                    break
+                with self._watch_lock:
+                    self._watch_res[s] = e
+        except Exception as ex:
+            self._watch_err = f"エンジンの解析でエラーが出ました：{ex}"
+        finally:
+            if eng is not None:
+                try:
+                    eng.stop()
+                    eng.close()
+                except Exception:
+                    pass
+
+    # ---------------------------------------------------------- 検討しながら伸びていくグラフ
+    def _live_record(self, cands):
+        """いま検討している局面の評価値を覚えて、グラフを更新する（詰将棋・全局解析・観戦中は対象外）。"""
+        try:
+            if self.tsume or self.game_running or getattr(self, "watching", False) or not cands:
+                return
+            b = self.cur_board
+            c = cands[0]
+            v, mate = core.eval_for_black(c, b.turn)
+            self.live_evals[b.sfen()] = {"v": int(v), "mate": mate, "depth": c.get("depth", 0),
+                                         "best": c["pv"][0] if c.get("pv") else "", "pv": list(c.get("pv", [])[:8]), "mpv": 1}
+            self._live_graph()
+        except Exception:
+            pass
+
+    def _live_graph(self):
+        """全局解析の結果が無いとき、検討した局面の評価値をつないだグラフを出す。"""
+        watching = getattr(self, "watching", False)
+        if watching or self.tsume or self.evals is not None:
+            if not watching:
+                self.graph.min_n = 0
+            return
+        try:
+            b = shogi.Board(self.start_sfen)
+            sfens = [b.sfen()]
+            for u in self.moves:
+                b.push(shogi.Move.from_usi(u))
+                sfens.append(b.sfen())
+            data = [self.live_evals.get(x) for x in sfens]
+            if len(self.moves) == 0 or not any(data):
+                self.graph.min_n = 0
+                self.graph.set_data(None, {}, {})
+                return
+            self.graph.min_n = max(40, ((len(sfens) - 1) // 20 + 1) * 20)
+            self.graph.set_data(data, {}, {})
+        except Exception:
+            pass
+
     def _stop_game_engines(self):
         for eng in list(getattr(self, "game_engines", [])):
             try:
@@ -2733,6 +3244,14 @@ class MainWindow(QMainWindow):
         self.game_label.setText("エラー：" + msg)
         QMessageBox.warning(self, "全局解析のエラー", msg)
 
+    @staticmethod
+    def _adv_text(v):
+        """先手から見た評価値を、どちらがどれだけ有利かの言葉にする。"""
+        v = int(v)
+        if abs(v) < 30:
+            return "互角"
+        return f"{'先手' if v > 0 else '後手'}が{abs(v)}点有利"
+
     def show_game_summary(self):
         """悪手・好手の一覧（手数をクリックでその局面へ）と、あれば講評を「全局の結果」タブに出す。
         このタブは、局面を動かしても消えない。"""
@@ -2753,8 +3272,7 @@ class MainWindow(QMainWindow):
                 bd = core.board_from(self.start_sfen, self.moves[:i - 1])
                 best = core.move_ja(bd, s["best"]) if s["best"] else "?"
                 lines.append(f"- [{i}手目 {core.move_ja(bd, s['usi'])}](ply{i})　**{s['name']}**（{s['loss']}点悪化、"
-                             f"{core.fmt_value({'v': s['before'], 'mate': None})}→"
-                             f"{core.fmt_value({'v': s['after'], 'mate': None})}）　最善は {best}")
+                             f"{self._adv_text(s['before'])}→{self._adv_text(s['after'])}）　最善は {best}")
         lines += ["", "### 好手・妙手", ""]
         if not self._has_second():
             lines.append("この解析は「高速」モード（候補1つ）なので、好手・妙手・エンジン一致は出していません。"
@@ -2805,6 +3323,7 @@ class MainWindow(QMainWindow):
             self.list.setCurrentRow(min(row, len(cands) - 1))
         self.list.blockSignals(False)
         self.on_pick_cand(self.list.currentRow())
+        self._live_record(cands)
         if final:
             self.analyzing = False
             self.cands_final = True
@@ -2950,6 +3469,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "読み込めません", f"解説ファイルを読めませんでした。\n{e}")
             return
+        self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor = data["sfen"], [], 0
         self.names = data.get("names") or ["先手", "後手"]
         self.refresh(analyze=False)
@@ -2985,6 +3505,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         self.gen += 1
         try:
+            if self.watching:
+                self._watch_stop.set()
+        except Exception:
+            pass
+        try:
             save_config(self.cfg)
         except OSError:
             pass
@@ -3001,36 +3526,20 @@ class MainWindow(QMainWindow):
 
 
 APP_QSS = """
+/* Preserve original button metrics; custom buttons paint their own surfaces. */
 QPushButton {
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #fbf6ea, stop:1 #e6d8b8);
-    color: #2b2118;
-    border: 1px solid #a8864a;
-    border-bottom: 2px solid #8a6a32;
-    border-radius: 6px;
-    padding: 5px 12px;
-    min-height: 22px;
+    background: #faf7ee; color: #3d3931;
+    border: 1px solid #c8bfab; border-radius: 5px;
+    padding: 5px 12px; min-height: 22px;
 }
-QPushButton:hover {
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #fffaf0, stop:1 #f0e0b8);
-    border-color: #b8892f;
-}
-QPushButton:pressed {
-    background: #d9c79a;
-    border-bottom: 1px solid #8a6a32;
-    padding-top: 6px;
-}
-QPushButton:checked {
-    background: #2b2118;
-    color: #f3e3bd;
-    border-color: #b8892f;
-}
-QPushButton:disabled {
-    background: #efebe2;
-    color: #a39a88;
-    border: 1px solid #d3cbb8;
-}
-QPushButton:focus { outline: none; }
-QPushButton:default { border: 2px solid #b8892f; }
+QPushButton:hover { background: #f1ebdb; border-color: #ac8745; }
+QPushButton:pressed { background: #e7dfcb; }
+QPushButton:checked { background: #e2eadf; color: #264734; border-color: #77917b; }
+QPushButton[role="primary"] { color: #fff9e9; font-weight: bold; }
+QPushButton[role="stop"] { color: #974c40; }
+QPushButton:focus { border-color: #ac8745; }
+QPushButton:disabled { background: #efede6; color: #a5a095; border-color: #ddd8cc; }
+QPushButton[role="primary"]:disabled, QPushButton[role="stop"]:disabled { color: #a5a095; }
 QDialogButtonBox QPushButton { min-width: 72px; }
 """
 
