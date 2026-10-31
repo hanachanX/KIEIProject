@@ -739,7 +739,7 @@ def export_kif(start_sfen, moves, names, comments=None, evals=None, swings=None,
     comments, swings, goods = comments or {}, swings or {}, goods or {}
     start = shogi.Board(start_sfen)
     std = start.sfen().split(" ")[0] == shogi.STARTING_SFEN.split(" ")[0] and start.turn == shogi.BLACK
-    lines = ["# KENTOで書き出した棋譜"]
+    lines = ["# 棋慧で書き出した棋譜"]
     if std:
         lines.append("手合割：平手")
     else:
