@@ -167,6 +167,17 @@ def clean(sfen, kh, ms=3000, progress=None, stop=None):
     return {"ok": True, "msg": "", "sfen": _plain(b), "line": cur_pv, "steps": N, "removed": removed, "flipped": flipped, "note": note}
 
 
+def _backend():
+    """詰みの判定部品を返す。C++版のDLLがあればそれを、無ければ従来のPython版（tsume.py）を使う"""
+    try:
+        import tsume_native as m
+        m._library()
+        return m
+    except Exception:
+        import tsume as m
+        return m
+
+
 def check_unique(sfen, N, kh, judge_kh, gen_checks, ms=3000):
     """初手の余詰を調べる。N手で詰む王手が複数あれば、その手のUSIを返す（唯一なら1個）。"""
     b = shogi.Board(sfen)
@@ -188,7 +199,7 @@ def check_unique(sfen, N, kh, judge_kh, gen_checks, ms=3000):
 def _eval_check(b, m, kh, ms):
     """盤bで攻方の王手mを指したあと、玉方の全応手の先で詰むかをエンジンに聞く。
     戻り値 (判定, 手数, 手順)。判定は 'mate' / 'no' / 'unsure'。手順は、玉方がいちばん粘る応手の先まで含めたUSIのリスト"""
-    import tsume as _t
+    _t = _backend()
     b.push(m)
     try:
         evs = _t.gen_evasions(b)
@@ -220,7 +231,7 @@ def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None):
     """作意の手順に沿って、攻方の各手番で、作意以外の王手が（手数に関係なく）詰むかを調べる。
     戻り値 [(何手目, その局面のSFEN, USI, 'mate' or 'unsure', 全体の詰み手数, その王手からの詰み手順(USIのリスト))]
     手数・手順は詰将棋専用エンジンのもので、無駄合を応手に数えるため、柿木将棋と手数が違うことがある"""
-    import tsume as _t
+    _t = _backend()
     b = shogi.Board(sfen)
     out = []
     # 最終手（詰ます最後の1手）の別解は、詰将棋の慣例で不問なので調べない

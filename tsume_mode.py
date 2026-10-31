@@ -11,10 +11,14 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLa
                              QPushButton, QTableWidget, QTableWidgetItem, QAbstractItemView, QVBoxLayout,
                              QHeaderView)
 
-try:
-    import tsume as solver
+try:                        # C++版（native_tsume/tsume.dll）があれば高速版、無ければ従来のPython版を使う
+    import tsume_native as solver
+    solver._library()        # DLLが無い・読み込めないときは、ここで例外になる
 except Exception:
-    solver = None
+    try:
+        import tsume as solver
+    except Exception:
+        solver = None
 
 DEFAULT_FOLDER = r"C:\FX_RISKMANAGER\TUME\data"
 SOLVE_MAX_PLIES = 7      # 正解手順が無い問題で、ソルバーに判定させる残り手数の上限
