@@ -769,7 +769,7 @@ def export_kif(start_sfen, moves, names, comments=None, evals=None, swings=None,
                 prev = board_from(start_sfen, moves[:k - 1])
                 mv = move_ja(prev, sw["usi"])
                 best = move_ja(prev, sw["best"]) if sw.get("best") else ""
-                s = (f"【{sw['name']}{sw['grade']}】{mv}で評価値が{sw['before']:+d}から{sw['after']:+d}に動きました"
+                s = (f"【{sw['name']}{sw['grade']}】{mv}で評価値が{sw['before']:+d}から{sw['after']:+d}に動きました（先手から見た値。プラスは先手有利、マイナスは後手有利）"
                      + (f"（最善は{best}）" if best else ""))
                 extra.append(s)
             except Exception:
