@@ -499,8 +499,9 @@ def solve_line(sfen, steps):
 class AltResultDialog(QDialog):
     """余詰検査の結果。文章はコピーでき、時間切れの王手は長い時間で調べ直せ、手順は変化つきのKIFで保存・コピーできる。"""
 
-    def __init__(self, parent, win, sfen, line, out, ms, stopped=False, target=None, tdlg=None):
+    def __init__(self, parent, win, sfen, line, out, ms, stopped=False, target=None, tdlg=None, tail_marks=None):
         super().__init__(parent)
+        self.tail_marks = set(tail_marks or ())
         self.target, self.tdlg = target, tdlg
         from PyQt6.QtWidgets import QPlainTextEdit
         self.win, self.sfen, self.line, self.ms, self.stopped = win, sfen, line, ms, stopped
@@ -515,6 +516,12 @@ class AltResultDialog(QDialog):
         v.addWidget(self.box, 1)
         self.lab = QLabel("")
         v.addWidget(self.lab)
+        self.ck_tail = QCheckBox("最終3手の変同（同手数・駒余りなし）は、余詰に数えない")
+        self.ck_tail.setToolTip("詰め上がり直前の攻方の最後の2手だけが違い、手数が同じで駒も余らない変化です。\n詰将棋パラダイスは最終2手の変同は問題なし、最終4手以前はキズとしていますが、最終3手は決まっていません。\n厳しく見るときはオフのままにしてください")
+        self.ck_tail.setChecked(bool(getattr(AltResultDialog, "_tail_on", False)))
+        self.ck_tail.setVisible(bool(self.tail_marks))
+        self.ck_tail.toggled.connect(self._tail_toggled)
+        v.addWidget(self.ck_tail)
         row = QHBoxLayout()
         self.b_copy = QPushButton("文章をコピー")
         self.b_copy.clicked.connect(self.copy_text)
@@ -536,6 +543,13 @@ class AltResultDialog(QDialog):
             row.addWidget(b)
         v.addLayout(row)
         self.rebuild()
+
+    def _tail_toggled(self, on):
+        AltResultDialog._tail_on = bool(on)
+        self.rebuild()
+
+    def _skip(self, k, u):
+        return self.ck_tail.isChecked() and (k, u) in self.tail_marks
 
     def write_memo(self):
         import datetime
@@ -565,7 +579,11 @@ class AltResultDialog(QDialog):
         import core
         found, unsure = [], []
         n = len(self.line)
+        self.n_skipped = 0
         for k, bsfen, u, vv, tot, ln in self.out:
+            if vv == "mate" and self._skip(k, u):
+                self.n_skipped += 1
+                continue
             try:
                 bd = shogi.Board(bsfen)
                 name = core.move_ja(bd, u)
@@ -599,6 +617,8 @@ class AltResultDialog(QDialog):
             t.append("、".join(f"{k}手目 {name}" for k, name in unsure))
             t.append("")
         t.append(f"※最終手（{n}手目）の別解は、詰将棋の慣例にならい不問として、調べていません。")
+        if self.n_skipped:
+            t.append(f"※最終3手の変同（同手数・駒余りなし）{self.n_skipped}件を、余詰に数えていません。")
         if self.stopped:
             t.append("（途中で中止しました。調べていない手があります）")
         self.box.setPlainText("\n".join(t))
@@ -661,12 +681,12 @@ class AltResultDialog(QDialog):
         import core
         vars_ = []
         for k, bsfen, u, vv, tot, ln in self.out:
-            if vv != "mate" or not ln:
+            if vv != "mate" or not ln or self._skip(k, u):
                 continue
             try:
                 prefix = list(self.line[:k - 1])
                 vars_.append({"from": k, "prefix": prefix, "moves": list(ln), "parent": -1, "end": "詰み",
-                              "comments": {k: f"【余詰】全{tot}手（無駄合を含む手数）"}})
+                              "comments": {k: f"【余詰】全{tot}手"}})
             except Exception:
                 continue
         return core.export_kif(self.sfen, self.line, ["先手", "後手"], None, variations=vars_)
@@ -817,7 +837,7 @@ class TsumeDialog(QDialog):
             target = next((q for q in self.probs if q["id"] == cur["id"]), None)
         if target is None:
             target = next((q for q in self.probs if sfen_key(q["sfen"]) == key), None)
-        job = {"stop": False, "done": False, "text": "調べています…（もう一度押すと中止）", "out": None}
+        job = {"stop": False, "done": False, "text": "調べています…（もう一度押すと中止）", "out": None, "tail": set()}
         self._alt_job = job
         win = self.win
         line = list(line)
@@ -828,7 +848,7 @@ class TsumeDialog(QDialog):
                 job["out"] = tsume_jissen.alt_along_line(
                     sfen, line, lambda s, m: win._tsume_kh(s, m), ms,
                     lambda k, n, i, m: job.__setitem__("text", f"作意の{k}手目（全{n}手）の別の王手を調べています… {i}/{m}"),
-                    lambda: job["stop"])
+                    lambda: job["stop"], job["tail"])
             except Exception as e:
                 job["out"] = []
                 job["text"] = "エラー：" + str(e)
@@ -841,7 +861,8 @@ class TsumeDialog(QDialog):
             win.status.setText(job["text"])
             if job["done"]:
                 tm.stop()
-                dlg = AltResultDialog(self, win, sfen, line, job["out"], ms, stopped=job["stop"], target=target, tdlg=self)
+                dlg = AltResultDialog(self, win, sfen, line, job["out"], ms, stopped=job["stop"], target=target, tdlg=self,
+                                      tail_marks=job["tail"])
                 dlg.exec()
 
         tm.timeout.connect(tick)
