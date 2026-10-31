@@ -227,13 +227,47 @@ def _eval_check(b, m, kh, ms):
         b.pop()
 
 
-def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None):
+def _hand_total(b):
+    """攻方（先手番の問題）の持駒の合計枚数。"""
+    return sum(b.pieces_in_hand[0].values()) if hasattr(b.pieces_in_hand[0], "values") else 0
+
+
+def _tail_only_alt(before, ln, k, line_len, main_end_hand):
+    """作意以外の手が、詰め上がり直前（攻方の最後の2手）だけの違いで、手数が同じで、駒も余らないなら True。
+    これは詰将棋の慣例で余詰に数えない。k は何手目（0始まりの手番番号）、ln はその王手からの詰み手順。"""
+    try:
+        if k + len(ln) != line_len or k < line_len - 3:
+            return False
+        b = shogi.Board(before)
+        for u in ln:
+            b.push_usi(u)
+        if not _t_is_mate(b):
+            return False
+        return _hand_total(b) <= main_end_hand
+    except Exception:
+        return False
+
+
+def _t_is_mate(b):
+    _t = _backend()
+    return not _t.gen_evasions(b) and b.is_check()
+
+
+def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None, tail_marks=None):
     """作意の手順に沿って、攻方の各手番で、作意以外の王手が（手数に関係なく）詰むかを調べる。
     戻り値 [(何手目, その局面のSFEN, USI, 'mate' or 'unsure', 全体の詰み手数, その王手からの詰み手順(USIのリスト))]
     手数・手順は詰将棋専用エンジンのもので、無駄合を応手に数えるため、柿木将棋と手数が違うことがある"""
     _t = _backend()
     b = shogi.Board(sfen)
     out = []
+    main_end_hand = 0
+    try:
+        bm = shogi.Board(sfen)
+        for u in line:
+            bm.push_usi(u)
+        main_end_hand = _hand_total(bm)
+    except Exception:
+        tail_marks = None
     # 最終手（詰ます最後の1手）の別解は、詰将棋の慣例で不問なので調べない
     for k in range(0, len(line) - 1, 2):
         if stop is not None and stop():
@@ -246,6 +280,8 @@ def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None):
             if progress:
                 progress(k + 1, len(line), i + 1, len(checks))
             v, n, ln = _eval_check(b, m, kh, ms)
+            if v == "mate" and tail_marks is not None and _tail_only_alt(before, ln, k, len(line), main_end_hand):
+                tail_marks.add((k + 1, m.usi()))      # 最終3手の変同（同手数・駒余りなし）。画面の設定で余詰に数えるかを選ぶ
             if v in ("mate", "unsure"):
                 out.append((k + 1, before, m.usi(), v, k + n if v == "mate" else 0, ln))
         b.push_usi(line[k])
