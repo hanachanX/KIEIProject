@@ -4,3 +4,4 @@
 *.exp
 build/
 __pycache__/
+kiei_error.txt
