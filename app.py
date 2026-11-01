@@ -1254,7 +1254,8 @@ class MainWindow(QMainWindow):
         self.live_evals = {}                # 検討した局面(SFEN)ごとの評価値。グラフが伸びていくのに使う
         self._watch_timer = QTimer(self)
         self._watch_timer.timeout.connect(self._watch_tick)
-        self.tools.addTab(page([kifu_btns, [self.btn_game, self.mode_box, self.btn_open_eval, self.btn_review],
+        self.header_btns = kifu_btns        # 貼り付け・コピー・ファイルは看板の右側に置く（どのタブからでも使える）
+        self.tools.addTab(page([[self.btn_game, self.mode_box, self.btn_open_eval, self.btn_review],
                                 [self.btn_watch]]), "棋譜・解析")
         self.tools.addTab(page([[self.btn_zumen, self.btn_zumen_out, self.btn_shot, self.btn_cap],
                                 [self.btn_edit, btn_turn, self.btn_tsumehai]]), "局面を作る")
@@ -1407,6 +1408,16 @@ class MainWindow(QMainWindow):
         hl.addSpacing(8)
         hl.addWidget(sub, 0, Qt.AlignmentFlag.AlignBottom)
         hl.addStretch(1)
+        for hb in getattr(self, "header_btns", []):
+            hb.setMinimumHeight(30)
+            hb.setCursor(Qt.CursorShape.PointingHandCursor)
+            hb.setStyleSheet(
+                "QPushButton { background:#3a2e22; color:#f3e3bd; border:1px solid #b8892f;"
+                " border-radius:4px; padding:4px 14px; font-size:13px; }"
+                "QPushButton:hover { background:#4d3c2a; }"
+                "QPushButton:pressed { background:#b8892f; color:#2b2118; }"
+                "QPushButton::menu-indicator { subcontrol-position:right center; right:4px; }")
+            hl.addWidget(hb, 0, Qt.AlignmentFlag.AlignVCenter)
         wrap = _W()
         wl = _V(wrap)
         wl.setContentsMargins(0, 0, 0, 0)
@@ -2758,6 +2769,7 @@ class MainWindow(QMainWindow):
             return
         sfen = self.cur_board.sfen()
         self.btn_kiei.setEnabled(False)
+        self.mate_by_kiei = False
         self.btn_mate_apply.setEnabled(False)
         self.btn_mate_check.setEnabled(False)
         self.btn_mate_alt.setEnabled(False)
@@ -2797,6 +2809,8 @@ class MainWindow(QMainWindow):
         verified=True のときは、「詳細検討」で直した手順を取り込む。"""
         if not self.last_mate:
             return
+        if verified is not True and getattr(self, "mate_by_kiei", False) and self.verified_game:
+            verified = True                    # 「棋慧で解く」の結果は、変化つきの検証済み手順をそのまま取り込む
         sfen, pv = self.last_mate
         if verified is True:
             if not self.verified_pv:
@@ -2845,6 +2859,7 @@ class MainWindow(QMainWindow):
         if st == "mate":
             pv = first["pv"]
             self.last_mate = (r["sfen"], list(pv))
+            self.mate_by_kiei = False
             self.btn_mate_apply.setEnabled(True)
             self.verified_pv = None
             self.verified_game = None
@@ -3052,6 +3067,8 @@ class MainWindow(QMainWindow):
             self.verified_pv = list(r["game"]["moves"])
             self.btn_mate_apply_v.setEnabled(True)
             if by_kiei:
+                self.mate_by_kiei = True
+                self.last_mate = (r["sfen"], list(r["game"]["moves"]))    # 駒余りなしを本手順にした、検証後の手順に合わせる
                 self.btn_mate_apply.setEnabled(True)
             if r["game"].get("variations"):
                 h.append("<p>「検証済み手順を盤へ」を押すと、変化も分岐棋譜として盤に取り込めます（「変化」の選択欄から切り替え）。</p>")
