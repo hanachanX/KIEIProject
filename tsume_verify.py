@@ -420,13 +420,70 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
         names = lambda bd, us: " ".join(_jp(fmt, bd, u) for u in us)
 
         vlist = []
+        _rc, _wc, _okc = {}, {}, {}
+
+        def rep_c(bd, n):
+            k = (bd.sfen(), n)
+            if k not in _rc:
+                _rc[k] = replies(bd, n)
+            return _rc[k]
+
+        def wins_c(bd, n):
+            k = (bd.sfen(), n)
+            if k not in _wc:
+                _wc[k] = attacker_wins(bd, n)
+            return _wc[k]
+
+        def hand_empty(bd):
+            return sum(bd.pieces_in_hand[shogi.BLACK].values()) == 0
+
+        def pick(rep):
+            """玉方の応手のうち、最長の変化になるもの（非限定の合駒は代表1つ）を (usi, 種別, 残り手数) のリストで返す。"""
+            valid = [r for r in rep if r[1] != '無駄合' and r[2] is not None]
+            if not valid:
+                return []
+            mx = max(r[2] for r in valid)
+            longest = [r for r in valid if r[2] == mx]
+            return [r for r in longest if r[1] != '合駒'] + [r for r in longest if r[1] == '合駒'][:1]
+
+        def finish_ok(bd, n, defender_turn):
+            """この局面から、攻め方の持駒を使い切って（駒余りなしで）詰ませる手順が、最長の変化の中にあるか。"""
+            k = (bd.sfen(), n, defender_turn)
+            if k in _okc:
+                return _okc[k]
+            if _time.time() > deadline:
+                raise ValueError("timeout")
+            if n <= 0:
+                r = hand_empty(bd)
+            elif defender_turn:
+                ch = pick(rep_c(bd, n))
+                if not ch:
+                    r = hand_empty(bd)
+                else:
+                    r = False
+                    for c in ch:
+                        q = _clone(bd); q.push_usi(c[0])
+                        if finish_ok(q, c[2], False):
+                            r = True; break
+            else:
+                ws = wins_c(bd, n)
+                if not ws:
+                    r = hand_empty(bd)
+                else:
+                    r = False
+                    for w in ws:
+                        q = _clone(bd); q.push_usi(w)
+                        if finish_ok(q, n - 1, True):
+                            r = True; break
+            _okc[k] = r
+            return r
 
         def walk(b, n, defender_turn, tokens, notes, path, vidx):
             while n > 0:
                 if _time.time() > deadline:
                     raise ValueError("timeout")
                 if defender_turn:
-                    rep = replies(b, n)
+                    rep = rep_c(b, n)
                     valid = [r for r in rep if r[1] != '無駄合' and r[2] is not None]
                     futile = [r[0] for r in rep if r[1] == '無駄合']
                     if not valid:
@@ -436,6 +493,12 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
                     nondrops = [r for r in longest if r[1] != '合駒']
                     drops = [r for r in longest if r[1] == '合駒']
                     choices = nondrops + drops[:1]
+                    if len(choices) > 1:
+                        # 同じ長さの受けが複数ある（変同）：攻め方の駒が余らない手順を、本手順（作意）にする
+                        def _fin(c):
+                            q = _clone(b); q.push_usi(c[0])
+                            return 0 if finish_ok(q, c[2], False) else 1
+                        choices = sorted(choices, key=_fin)
                     first = choices[0]
                     for alt in choices[1:]:
                         if len(blocks) >= max_blocks:
@@ -458,9 +521,14 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
                     tokens.append(tok); b.push_usi(first[0]); path.append(first[0])
                     n = first[2]; defender_turn = False
                 else:
-                    wins = attacker_wins(b, n)
+                    wins = wins_c(b, n)
                     if not wins:
                         break
+                    if len(wins) > 1:
+                        def _fin2(w):
+                            q = _clone(b); q.push_usi(w)
+                            return 0 if finish_ok(q, n - 1, True) else 1
+                        wins = sorted(wins, key=_fin2)
                     tokens.append(_jp(fmt, b, wins[0]))
                     if len(wins) > 1:
                         tokens.append("（非限定）")
@@ -555,3 +623,57 @@ def quick_check(sfen, pv, time_limit=20, fmt=None):
     finally:
         T.TIMEOUT = old
         res["sec"] = _time.time() - t0
+
+def solve_first(sfen, time_limit=150, max_n=31):
+    """棋慧だけで詰みを探す（Komoring不要）。短い手数から順に、詰む最短の手数 N を求める。
+    返り値: dict(state='ok'|'nomate'|'timeout'|'skip'|'error', N, firsts(初手の候補), pv(手順の一例), upto(ここまでは詰まないと確認した手数), msg, sec)"""
+    t0 = _time.time()
+    res = {"state": "skip", "N": None, "firsts": [], "pv": [], "upto": 0, "msg": "", "sec": 0.0}
+    try:
+        b = shogi.Board(sfen)
+    except Exception as e:
+        res["state"] = "error"; res["msg"] = str(e); return res
+    if b.turn != shogi.BLACK:
+        res["msg"] = "先手（攻め方）の手番の詰将棋の形でないため、解けません。「手番切替」で攻め方の手番にしてください。"
+        return res
+    old = T.TIMEOUT
+    deadline = t0 + time_limit
+    try:
+        N = None
+        n = 1
+        while n <= max_n:
+            left = deadline - _time.time()
+            if left <= 0:
+                res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
+                return res
+            T.TIMEOUT = max(1.0, left)
+            try:
+                if T.can_mate(b, n):
+                    N = n; break
+            except ValueError as e:
+                if "timeout" not in str(e):
+                    raise
+                res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
+                return res
+            res["upto"] = n
+            n += 2
+        if N is None:
+            res["state"] = "nomate"; res["msg"] = f"{max_n}手以内には詰みが見つかりませんでした（不詰、またはもっと長い手数）。"
+            return res
+        T.TIMEOUT = max(1.0, deadline - _time.time())
+        wins = attacker_wins(b, N)
+        if not wins:
+            res["state"] = "error"; res["msg"] = "初手を特定できませんでした。"; return res
+        res["N"], res["firsts"] = N, wins
+        res["pv"] = main_line(sfen, [wins[0]], N)
+        res["state"] = "ok"
+        return res
+    except ValueError as e:
+        res["state"] = "timeout" if "timeout" in str(e) else "error"
+        res["msg"] = (f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
+                      if res["state"] == "timeout" else str(e))
+        return res
+    finally:
+        T.TIMEOUT = old
+        res["sec"] = _time.time() - t0
+
