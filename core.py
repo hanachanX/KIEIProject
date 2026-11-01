@@ -46,7 +46,7 @@ DEFAULT_CONFIG = {
     "openai_api_key": "",
     "openai_model": "gpt-5.4-mini",
     "gemini_api_key": "",
-    "gemini_model": "gemini-2.5-flash",
+    "gemini_model": "gemini-3.8-flash",
 }
 
 
@@ -67,6 +67,8 @@ def load_config(path):
         cfg["anthropic_api_key"] = os.environ.get("ANTHROPIC_API_KEY", "")
     if not cfg.get("groq_api_key"):
         cfg["groq_api_key"] = os.environ.get("GROQ_API_KEY", "")
+    if cfg.get("gemini_model") == "gemini-2.5-flash":     # 昔の初期値のままなら、いまの推奨モデルに替える（新しく始める人向けの提供が終わっているため）
+        cfg["gemini_model"] = "gemini-3.8-flash"
     if cfg.get("llm_provider") not in LLM_PROVIDERS:      # 昔の設定に残った、使わなくなったAIは Gemini に戻す
         cfg["llm_provider"] = "gemini"
     return cfg
@@ -1463,7 +1465,7 @@ def ask_llm(prompt, cfg):
         return ask_claude(prompt, cfg.get("anthropic_api_key", ""), cfg.get("anthropic_model", "claude-sonnet-5-5"))
     if p == "groq":
         return ask_groq(prompt, cfg.get("groq_api_key", ""), cfg.get("groq_model", "openai/gpt-oss-120b"))
-    return ask_gemini(prompt, cfg.get("gemini_api_key", ""), cfg.get("gemini_model", "gemini-2.5-flash"))
+    return ask_gemini(prompt, cfg.get("gemini_api_key", ""), cfg.get("gemini_model", "gemini-3.8-flash"))
 
 
 def ask_gemini_image(prompt, image_bytes, api_key, model, mime="image/png", timeout=180):
