@@ -305,6 +305,7 @@ struct Solver {
     std::unordered_map<uint64_t,int> ost;
     long long o_calls=0,o_pruned=0;
     int oracle_min=5;
+    bool final_alt=false; // allow several last moves (any square) when true
     std::string error;
     std::string last_output;
     bool timed=false;
@@ -522,8 +523,11 @@ struct Solver {
     bool line(Board b,int n,std::vector<Move>& out) {
         out.clear();int remaining=n;
         while(true) {
-            tick();auto wins=solve(b,remaining);if(wins.size()!=1)return false;
-            out.push_back(wins[0]);b.push(wins[0]);auto ev=evasions(b,remaining-1);if(ev.empty())return true;
+            tick();auto wins=solve(b,remaining);
+            if(wins.empty()||(wins.size()!=1&&!(final_alt&&remaining==1)))return false;
+            Move pk=wins[0];
+            if(wins.size()>1){for(auto w:wins){Board q=b;q.push(w);bool e=true;for(int p=P;p<K;++p)if(q.hand[0][p])e=false;if(e){pk=w;break;}}}
+            out.push_back(pk);b.push(pk);auto ev=evasions(b,remaining-1);if(ev.empty())return true;
             Move best;bool found=false;int best_len=-1;
             for(auto d:ev){Board q=b;q.push(d);for(int k=1;k<remaining-1;k+=2)if(mate(q,k)) {
                 if(k>best_len){best=d;best_len=k;found=true;}break;}}
@@ -615,6 +619,7 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
         return s.forward(Pos::from(Board::parse(q)),parse_move(m),Pos::from(Board::parse(p)),color)?"1":"0";
     }
     if(op=="oracle_min"){s.oracle_min=n<3?3:n;return "";}
+    if(op=="final_alt"){s.final_alt=n!=0;return "";}
     if(op=="oracle_stats")return std::to_string(s.o_calls)+" "+std::to_string(s.o_pruned);
     Board b=Board::parse(text);
     if(b.king(1)<0)throw std::invalid_argument("Defender king is required");
