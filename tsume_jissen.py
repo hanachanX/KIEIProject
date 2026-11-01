@@ -119,6 +119,89 @@ def fill_defender_hand(b):
     return shogi.Board(_plain(n))
 
 
+# ---------------------------------------------------------------- 棋慧エンジン（DLL）で判定する部品
+def _flip_usi(u):
+    """盤を180度回したときの指し手の読み替え（先手と後手を入れ替えた局面で出した手を、元の向きに戻す）"""
+    def sq(f, r):
+        return str(10 - int(f)) + chr(ord("a") + 8 - (ord(r) - ord("a")))
+    if len(u) >= 4 and u[1] == "*":
+        return u[:2] + sq(u[2], u[3])
+    out = sq(u[0], u[1]) + sq(u[2], u[3])
+    return out + u[4:]
+
+
+def native_available():
+    try:
+        import tsume_native as m
+        import tsume_verify  # noqa: F401
+        m._library()
+        return True
+    except Exception:
+        return False
+
+
+def native_kh(sfen, ms=3000, upto=None, max_n=31):
+    """棋慧エンジン(DLL)で詰みを調べる。詰将棋の約束（無駄合は応手に数えない・攻め方の玉は無い）で判定する。
+    sfen は攻め方の手番（先手でも後手でもよい）。upto を渡すと、その手数までだけ調べる。
+    戻り値は kh と同じ形 (状態, 手順)。状態は 'mate' / 'nomate' / 'timeout' / 'error'。手順は元の向きのUSI。"""
+    import time as _t
+    import tsume_native as T
+    import tsume_verify as V
+    try:
+        b0 = shogi.Board(sfen)
+    except Exception:
+        return "error", []
+    if b0.is_check():
+        return "nomate", []                      # 手番側が王手されている局面は、詰将棋の初形にならない
+    b, flipped = to_attacker_black(b0)
+    ak = b.king_squares[shogi.BLACK]
+    if ak is not None:
+        n = shogi.Board(b.sfen())
+        n.remove_piece_at(ak)
+        b = shogi.Board(_plain(n))
+    wk = b.king_squares[shogi.WHITE]
+    if wk is None or b.attackers(shogi.BLACK, wk):
+        return "nomate", []
+    lim = min(upto if upto else max_n, 31)
+    deadline = _t.time() + max(0.3, ms / 1000.0)
+    old = T.TIMEOUT
+    try:
+        found = None
+        for n in range(1, lim + 1, 2):
+            left = deadline - _t.time()
+            if left <= 0:
+                return "timeout", []
+            T.TIMEOUT = max(0.2, left)
+            try:
+                if T.can_mate(b, n):
+                    found = n
+                    break
+            except ValueError as e:
+                if "timeout" in str(e):
+                    return "timeout", []
+                raise
+        if found is None:
+            return "nomate", []
+        T.TIMEOUT = max(1.0, deadline - _t.time())
+        wins = V.attacker_wins(b, found)
+        if not wins:
+            return "error", []
+        pv = V.main_line(_plain(b), [wins[0]], found)
+        if flipped:
+            pv = [_flip_usi(u) for u in pv]
+        return "mate", pv
+    except ValueError as e:
+        return ("timeout" if "timeout" in str(e) else "error"), []
+    finally:
+        T.TIMEOUT = old
+
+
+def native_unique(sfen, N):
+    """初手の余詰を調べる（無駄合を除く）。N手以内で詰む初手のUSIの一覧を返す（唯一なら1個）。"""
+    import tsume_verify as V
+    return [m for m in V.attacker_wins(shogi.Board(sfen), N)]
+
+
 def clean(sfen, kh, ms=3000, progress=None, stop=None):
     """不要な駒を取り除く。1つ外すごとに「同じ手数で詰む」ことを確かめ、詰みが変わるなら外さない。
     戻り値 dict(ok, msg, sfen, line, steps, removed[説明], flipped) 。"""
@@ -131,7 +214,7 @@ def clean(sfen, kh, ms=3000, progress=None, stop=None):
     cur_pv = pv
     if b.king_squares[shogi.BLACK] is not None:       # 攻方の玉は詰将棋では置かない
         b2 = _apply_removal(b, ("board", b.king_squares[shogi.BLACK]))
-        s2, p2 = kh(_plain(b2), ms)
+        s2, p2 = kh(_plain(b2), ms, N)
         if s2 == "mate" and len(p2) == N:
             b, cur_pv = b2, p2
             removed.append("攻方の玉")
@@ -149,7 +232,7 @@ def clean(sfen, kh, ms=3000, progress=None, stop=None):
             b2 = _apply_removal(b, cand)
             if progress:
                 progress(_describe(b, cand))
-            s2, p2 = kh(_plain(b2), ms)
+            s2, p2 = kh(_plain(b2), ms, N)
             if s2 == "mate" and len(p2) == N:
                 removed.append(_describe(b, cand))
                 b, cur_pv = b2, p2
@@ -321,7 +404,7 @@ def make_problem(raw_sfen, res, label):
 import threading
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QHeaderView)
 
 
@@ -349,6 +432,27 @@ class JissenDialog(QDialog):
         for b in (self.b_scan, self.b_now, self.b_stop):
             r1.addWidget(b)
         v.addLayout(r1)
+        r1b = QHBoxLayout()
+        r1b.addWidget(QLabel("判定エンジン"))
+        self.cb_eng = QComboBox()
+        self.cb_eng.addItem("棋慧エンジン（無駄合を除く・速い）")
+        self.cb_eng.addItem("KomoringHeights（外部エンジン）")
+        self._native_ok = native_available()
+        if not self._native_ok:
+            self.cb_eng.setCurrentIndex(1)
+            self.cb_eng.setItemText(0, "棋慧エンジン（DLLが見つかりません）")
+        self.cb_eng.setToolTip("棋慧エンジンは、無駄合を数えない詰将棋の約束で、DLLを使ってすばやく判定します（目安は15手くらいまで）。"
+                               "それより長い詰みはKomoringHeightsに切り替えてください")
+        r1b.addWidget(self.cb_eng)
+        r1b.addWidget(QLabel("探す最長手数"))
+        self.cb_len = QComboBox()
+        for n in (5, 7, 9, 11, 13, 15, 99):
+            self.cb_len.addItem("制限なし" if n == 99 else f"{n}手まで", n)
+        self.cb_len.setCurrentIndex(2)
+        self.cb_len.setToolTip("棋慧エンジンでは、手数が長いほど1局面あたりの時間が増えます。まず9手まででためすのがおすすめです")
+        r1b.addWidget(self.cb_len)
+        r1b.addStretch(1)
+        v.addLayout(r1b)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["手数（この手を指す前）", "手番", "詰み手数"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -360,7 +464,7 @@ class JissenDialog(QDialog):
         v.addWidget(self.table, 1)
         self.ck_clean = QCheckBox("不要な駒を取り除く（お掃除）")
         self.ck_clean.setChecked(True)
-        self.ck_uni = QCheckBox("初手の余詰も調べる（さらに時間がかかります）")
+        self.ck_uni = QCheckBox("初手の余詰も調べる（棋慧エンジンなら一瞬です。Komoringだと時間がかかります）")
         v.addWidget(self.ck_clean)
         v.addWidget(self.ck_uni)
         r2 = QHBoxLayout()
@@ -385,7 +489,12 @@ class JissenDialog(QDialog):
         self.target = None          # (sfen, ラベル)
 
     # ---- 共通
-    def _kh(self, sfen, ms):
+    def _use_native(self):
+        return self._native_ok and self.cb_eng.currentIndex() == 0
+
+    def _kh(self, sfen, ms, upto=None):
+        if self._use_native():
+            return native_kh(sfen, ms, upto)
         return self.win._tsume_kh(sfen, ms)
 
     def _run(self, fn):
@@ -429,11 +538,17 @@ class JissenDialog(QDialog):
             self.msg.setPlainText("棋譜が読み込まれていません。先にKIFなどを開いてください")
             return
         self.table.setRowCount(0)
+        max_len = int(self.cb_len.currentData() or 99)
+        use_nat = self._use_native()
 
         def fn(job):
             def prog(i, total):
                 job["text"] = f"調べています… {i}/{total - 1} 手目"
-            return find_mates(sfen0, moves, self._kh, 99, 1500, prog, lambda: job["stop"])
+            if use_nat:
+                kh = lambda sf, ms: native_kh(sf, ms, None, max_len)
+            else:
+                kh = self._kh
+            return find_mates(sfen0, moves, kh, max_len, 1500, prog, lambda: job["stop"])
 
         self._run(fn)
         self.job["handler"] = self._scan_done
@@ -493,6 +608,7 @@ class JissenDialog(QDialog):
         self.b_show.setEnabled(False)
 
         do_clean, do_uni = self.ck_clean.isChecked(), self.ck_uni.isChecked()
+        use_nat = self._use_native()
 
         def fn(job):
             job["text"] = "詰みを確認しています…"
@@ -512,11 +628,14 @@ class JissenDialog(QDialog):
                 job["stop"] = False
                 job["text"] = "初手の余詰を調べています…"
                 try:
-                    import tsume_mode as T
-                    res["alts"] = check_unique(res["sfen"], res["steps"], self._kh, T._judge_kh, T.solver.gen_checks, 3000)
+                    if use_nat:
+                        res["alts"] = native_unique(res["sfen"], res["steps"])
+                    else:
+                        import tsume_mode as T
+                        res["alts"] = check_unique(res["sfen"], res["steps"], self._kh, T._judge_kh, T.solver.gen_checks, 3000)
                 except Exception:
                     res["alts"] = None
-            res["label"], res["raw"] = label, sfen
+            res["label"], res["raw"], res["native"] = label, sfen, use_nat
             return res
 
         self._run(fn)
@@ -537,9 +656,10 @@ class JissenDialog(QDialog):
         elif len(alts) <= 1:
             u = "初手の余詰：なし"
         else:
-            u = "初手の余詰の可能性：" + "、".join(alts[:6])
+            u = ("初手の余詰：あり（" if res.get("native") else "初手の余詰の可能性（") + "、".join(alts[:6]) + "）"
         rm = res["removed"]
-        txt = f"{res['steps']}手詰になりました。{u}\n取り除いた駒 {len(rm)}個"
+        eng = "棋慧エンジン（無駄合を除く）" if res.get("native") else "Komoring"
+        txt = f"{res['steps']}手詰になりました（{eng}で判定）。{u}\n取り除いた駒 {len(rm)}個"
         if rm:
             txt += "：" + "、".join(rm[:12]) + ("…" if len(rm) > 12 else "")
         if res.get("note"):
