@@ -1198,6 +1198,10 @@ class MainWindow(QMainWindow):
         self.btn_mate = QPushButton("詰みを探す")
         self.btn_mate.setToolTip("詰将棋用：この局面の詰み手順を探します。詰将棋用エンジンが設定されていればそれを、無ければ通常のエンジンの詰み探索(go mate)を使います。止めるには右の「停止」")
         self.btn_mate.clicked.connect(self.search_mate)
+        self.btn_kiei = QPushButton("棋慧で解く")
+        self.btn_kiei.setToolTip("Komoringなどの外部エンジンを使わず、棋慧だけでこの詰将棋を解きます（短い手数から順に読むので、15手前後までが目安）。"
+                                 "最短の手数・初手・変化まで調べます")
+        self.btn_kiei.clicked.connect(self.solve_kiei)
         self.btn_mate_apply = QPushButton("詰み手順を盤へ")
         self.btn_mate_apply.setToolTip("「詰みを探す」で見つかった手順を、棋譜として盤に取り込みます（KIF保存・KIFコピーで残せます）")
         self.btn_mate_apply.setEnabled(False)
@@ -1254,7 +1258,7 @@ class MainWindow(QMainWindow):
                                 [self.btn_watch]]), "棋譜・解析")
         self.tools.addTab(page([[self.btn_zumen, self.btn_zumen_out, self.btn_shot, self.btn_cap],
                                 [self.btn_edit, btn_turn, self.btn_tsumehai]]), "局面を作る")
-        self.tools.addTab(page([[self.btn_tsume, self.btn_mate, self.btn_mate_apply, self.btn_mate_check, self.btn_mate_alt, self.btn_mate_apply_v]]), "詰将棋")
+        self.tools.addTab(page([[self.btn_tsume, self.btn_mate, self.btn_kiei, self.btn_mate_apply, self.btn_mate_check, self.btn_mate_alt, self.btn_mate_apply_v]]), "詰将棋")
         self.tools.setMaximumHeight(160)
         self.tools.currentChanged.connect(lambda _i: self.update_tsume_banner())
         lv.addWidget(self.tools)
@@ -1953,8 +1957,15 @@ class MainWindow(QMainWindow):
     def copy_kif(self):
         """今の局面（指し手があれば手順つき）をKIFの文章にして、クリップボードに入れる。柿木将棋などに貼り付けて使う。"""
         try:
-            text = core.export_kif(self.start_sfen, self.moves, self.names, self.current_kif_comments(),
-                                   None, None, info=self.kif_info_here())
+            vars_copy, moves_c, comments_c = None, self.moves, self.current_kif_comments()
+            if self.variations and self.main_game and self.start_sfen == self.main_game[2]:
+                if self.var_combo.currentIndex() > 0:        # 変化を見ている：本手順＋全部の変化として出す
+                    moves_c, comments_c = self.main_game[0], self.main_game[1]
+                    vars_copy = self.variations
+                elif self.moves == self.main_game[0]:
+                    vars_copy = self.variations
+            text = core.export_kif(self.start_sfen, moves_c, self.names, comments_c,
+                                   None, None, variations=vars_copy, info=self.kif_info_here())
         except Exception as e:
             QMessageBox.warning(self, "コピーできません", str(e))
             return
@@ -2740,6 +2751,47 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def solve_kiei(self):
+        """棋慧だけで詰将棋を解く（Komoring不要）。最短の手数と初手を求めてから、「詳細検討」と同じ形で変化まで出す。"""
+        if tsume_verify is None:
+            QMessageBox.warning(self, "解けません", "検証用の部品(tsume_verify)が読み込めていません。")
+            return
+        sfen = self.cur_board.sfen()
+        self.btn_kiei.setEnabled(False)
+        self.btn_mate_apply.setEnabled(False)
+        self.btn_mate_check.setEnabled(False)
+        self.btn_mate_alt.setEnabled(False)
+        self.btn_mate_apply_v.setEnabled(False)
+        self.verified_pv = None
+        self.verified_game = None
+        self.last_mate = (sfen, [])
+        self.status.setText("棋慧だけで解いています…（短い手数から順に読みます。最長3分）")
+        self.kh_ask_n, self.kh_ask_sec, self.kh_ask_by = 0, 0.0, {}
+
+        def work():
+            t0 = time.time()
+            try:
+                sv = tsume_verify.solve_first(sfen, time_limit=150)
+                if sv["state"] != "ok":
+                    res = {"state": "timeout" if sv["state"] == "timeout" else ("skip" if sv["state"] in ("skip", "nomate") else "error"),
+                           "msg": sv["msg"], "sec": 0.0}
+                    pv = []
+                else:
+                    pv = list(sv["pv"])
+                    res = tsume_verify.detail(sfen, pv, time_limit=max(20, 175 - int(time.time() - t0)), fmt=core.move_ja)
+                    res["firsts"] = list(sv["firsts"])
+                    if sv["pv"]:
+                        self.last_mate = (sfen, pv)
+            except Exception as e:
+                res, pv = {"state": "error", "msg": str(e), "sec": 0.0}, []
+            res["sec"] = time.time() - t0
+            res["by_kiei"] = True
+            res["kind"], res["sfen"], res["pv"] = "alt", sfen, pv
+            res["kh_used"], res["kh_asks"], res["kh_sec"], res["kh_by"] = False, 0, 0.0, {}
+            self.sig.verify.emit(res)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def apply_mate_line(self, verified=False):
         """「詰みを探す」で見つかった手順を、棋譜として盤に取り込む（駒を動かしても消えない）。
         verified=True のときは、「詳細検討」で直した手順を取り込む。"""
@@ -2929,6 +2981,7 @@ class MainWindow(QMainWindow):
     def on_verify(self, r):
         import html as _h
         esc = lambda t: _h.escape(str(t))
+        self.btn_kiei.setEnabled(True)
         same = bool(self.last_mate and self.last_mate[0] == r.get("sfen"))
         if same:
             self.btn_mate_check.setEnabled(tsume_verify is not None)
@@ -2937,9 +2990,15 @@ class MainWindow(QMainWindow):
             return                                   # 検証中に別の局面へ移った：古い結果は出さない
         st, sec, kind = r.get("state"), r.get("sec", 0.0), r.get("kind")
         b = shogi.Board(r["sfen"])
-        kh = tsume_verify.line_ja(r["sfen"], r["pv"])
-        title = "手順検証" if kind == "line" else "詳細検討"
-        h = [f"<h3>{title}（棋慧エンジン）</h3>", f"<p>KomoringHeightsの手順：<br>{esc(kh)}</p>"]
+        by_kiei = bool(r.get("by_kiei"))
+        try:
+            kh = tsume_verify.line_ja(r["sfen"], r["pv"]) if r["pv"] else ""
+        except Exception:
+            kh = ""
+        title = "棋慧で解く" if by_kiei else ("手順検証" if kind == "line" else "詳細検討")
+        h = [f"<h3>{title}（棋慧エンジン）</h3>"]
+        if kh:
+            h.append(f"<p>{'棋慧が見つけた手順' if by_kiei else 'KomoringHeightsの手順'}：<br>{esc(kh)}</p>")
         if st in ("skip", "timeout", "error"):
             h.append(f"<p>{esc(r.get('msg') or '検証できませんでした。')}</p>")
         elif kind == "line":
@@ -2966,7 +3025,19 @@ class MainWindow(QMainWindow):
                 h.append(f"<h4>{esc(ttl)}</h4><p><b>{esc(text)}</b></p>")
                 for n in notes:
                     h.append(f"<p>※{esc(n)}</p>")
-            h.append("<p>初手はKomoringHeightsの手を前提にしています（初手の余詰は調べていません）。</p>")
+            if by_kiei:
+                fs = r.get("firsts") or []
+                if len(fs) > 1:
+                    try:
+                        b0 = shogi.Board(r["sfen"])
+                        names = [core.move_ja(b0, u) for u in fs]
+                    except Exception:
+                        names = list(fs)
+                    h.append(f"<p><b>初手に余詰があります：</b> {esc(' '.join(names))}（どれでも{r['N']}手で詰みます）</p>")
+                else:
+                    h.append("<p>初手に余詰はありません（最短の詰みになる初手は、上の1手だけです）。</p>")
+            else:
+                h.append("<p>初手はKomoringHeightsの手を前提にしています（初手の余詰は調べていません）。</p>")
         h.append(f"<p>棋慧エンジンの考慮時間：{sec:.1f}秒</p>")
         if r.get("kh_used"):
             by = r.get("kh_by", {})
@@ -2980,6 +3051,8 @@ class MainWindow(QMainWindow):
             self.verified_game = r["game"]
             self.verified_pv = list(r["game"]["moves"])
             self.btn_mate_apply_v.setEnabled(True)
+            if by_kiei:
+                self.btn_mate_apply.setEnabled(True)
             if r["game"].get("variations"):
                 h.append("<p>「検証済み手順を盤へ」を押すと、変化も分岐棋譜として盤に取り込めます（「変化」の選択欄から切り替え）。</p>")
         self.result.setHtml("".join(h))

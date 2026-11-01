@@ -115,7 +115,7 @@ def extract_kif_comments(text):
     return out
 
 
-_PLUS_TIME = "   ( 0:00/00:00:00)+"          # 「この手に変化あり」の印（時間の後ろの+）
+_PLUS_TIME = "+"          # 「この手に変化あり」の印（指し手のすぐ後ろの+。柿木将棋の書き方）
 _SAME_RE = re.compile(r"^(\s*\d+\s+)同(?=[^\s　])")
 _PLUS_RE = re.compile(r"^(\s*(\d+)\s+\S.*?)[ ]*\+[ ]*$")   # 時間の欄がある行も、無い行（例：「12 ８三歩打+」「14 ９五玉(84)+」）も
 
@@ -818,7 +818,22 @@ def export_kif(start_sfen, moves, names, comments=None, evals=None, swings=None,
         lines.append(f"{len(moves) + 1:4d} 投了")
         for k in tail:
             lines += ["*" + t for t in comments[k].split("\n")]
-    for v in (variations or []):                       # 元の棋譜の枝分かれ（変化）はそのまま残す
+    # 柿木将棋は「変化」を、直前の手順の続きとして読む。変化の分かれ目が遅いものから順に（各変化の子も、その直後に）並べる
+    _kids = {}
+    for idx, v in enumerate(variations or []):
+        _kids.setdefault(v.get("parent", -1), []).append(idx)
+    _order = []
+
+    def _emit(p):
+        for idx in sorted(_kids.get(p, []), key=lambda j: (-variations[j]["from"], j)):
+            _order.append(variations[idx])
+            _emit(idx)
+    if variations:
+        _emit(-1)
+        for idx, v in enumerate(variations):             # 親が見つからない変化も落とさない
+            if v not in _order:
+                _order.append(v)
+    for v in _order:                       # 元の棋譜の枝分かれ（変化）はそのまま残す
         try:
             n = v["from"]
             b2 = shogi.Board(start_sfen)
