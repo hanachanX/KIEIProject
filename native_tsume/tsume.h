@@ -16,7 +16,8 @@ TSUME_API const char* TSUME_CALL tsume_error(void* context);
 TSUME_API int TSUME_CALL tsume_copy_result(void* context, char* output, size_t capacity);
 // Returns bytes required INCLUDING NUL, or -1 on error. A short buffer is untouched.
 // Operations: checks, evasions, moves, can_mate, defenders, exact, solve, line,
-// verify, unmove, dead, node, random, generate, clear. See README.md for arguments.
+// verify, unmove, dead, node, random, generate, search, forward, futile, final_alt,
+// clear. See README.md for arguments.
 TSUME_API int TSUME_CALL tsume_run(void* context, const char* operation,
     const char* sfen, int n, int color, unsigned long long seed,
     int budget, double seconds, char* output, size_t capacity);
