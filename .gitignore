@@ -10,6 +10,7 @@ __pycache__/
 error.log
 *_log.txt
 *.bak
+kiei_error.txt
 
 # --- 個人の作業データ ---
 tsume_state.json
