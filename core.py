@@ -116,7 +116,8 @@ def extract_kif_comments(text):
 
 
 _PLUS_TIME = "   ( 0:00/00:00:00)+"          # 「この手に変化あり」の印（時間の後ろの+）
-_PLUS_RE = re.compile(r"^(\s*(\d+)\s+.*\([ /:0-9]+\))[ ]*\+[ ]*$")
+_SAME_RE = re.compile(r"^(\s*\d+\s+)同(?=[^\s　])")
+_PLUS_RE = re.compile(r"^(\s*(\d+)\s+\S.*?)[ ]*\+[ ]*$")   # 時間の欄がある行も、無い行（例：「12 ８三歩打+」「14 ９五玉(84)+」）も
 
 
 def split_variations(text):
@@ -125,6 +126,7 @@ def split_variations(text):
     戻り値: (本手順の文章, 本手順で「+」の付いた手数の集合, [{from, lines, plus}])"""
     main, blocks, cur, main_plus = [], [], None, set()
     for ln in (text or "").splitlines():
+        ln = _SAME_RE.sub(r"\1同　", ln)                 # 「同龍(62)」のように「同」の後ろに空白が無い棋譜も読めるようにする
         m = re.match(r"^変化：\s*(\d+)手", ln)
         if m:
             cur = {"from": int(m.group(1)), "lines": [], "plus": set()}
