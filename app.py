@@ -30,6 +30,10 @@ try:
     import tsume_mode
 except Exception:
     tsume_mode = None
+try:
+    import tsume_verify                      # 無駄合を除いた検証（棋慧エンジン）
+except Exception:
+    tsume_verify = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -899,6 +903,7 @@ class Sig(QObject):
     shot = pyqtSignal(object)
     shot_err = pyqtSignal(str)
     mate = pyqtSignal(object)
+    verify = pyqtSignal(object)
     game_prog = pyqtSignal(str, int, object)
     game_done = pyqtSignal(str, bool)
     game_err = pyqtSignal(str)
@@ -925,6 +930,10 @@ class EvalGraph(QWidget):
         self.tipfn = None
         self.min_n = 0              # 観戦中は、手数の目盛りを固定して、右へ伸びていくようにする
         self.msg = "検討しながら指していくと、ここに評価値のグラフが伸びていきます"
+
+    def sizeHint(self):
+        from PyQt6.QtCore import QSize
+        return QSize(300, 130)          # 余裕があるときは高さ130（全画面で低い画面のときだけ70まで縮む）
 
     def set_data(self, data, marks=None, goods=None):
         self.data, self.marks, self.goods = data, (marks or {}), (goods or {})
@@ -1040,6 +1049,10 @@ class MainWindow(QMainWindow):
         self.engine_lock = threading.Lock()
         self.tsume_eng = None                  # 詰将棋専用エンジン（KomoringHeights）
         self.tsume_lock = threading.Lock()
+        self.tsume_olock = threading.Lock()
+        self.tsume_oeng = None
+        self.kh_ask_ms = 40                   # 検証中の1回の問い合わせの制限時間(ミリ秒)。普通は数ミリ秒で答えが出る
+        self.kh_ask_by = {}
         self.gen = 0
         self.analyzing = False
         self.cands = []
@@ -1073,6 +1086,7 @@ class MainWindow(QMainWindow):
         self.sig.error.connect(self.on_error)
         self.sig.gemini.connect(self.on_gemini)
         self.sig.mate.connect(self.on_mate)
+        self.sig.verify.connect(self.on_verify)
         self.sig.game_prog.connect(self.on_game_prog)
         self.sig.game_done.connect(self.on_game_done)
         self.sig.game_err.connect(self.on_game_err)
@@ -1188,6 +1202,22 @@ class MainWindow(QMainWindow):
         self.btn_mate_apply.setToolTip("「詰みを探す」で見つかった手順を、棋譜として盤に取り込みます（KIF保存・KIFコピーで残せます）")
         self.btn_mate_apply.setEnabled(False)
         self.btn_mate_apply.clicked.connect(self.apply_mate_line)
+        self.btn_mate_check = QPushButton("手順検証")
+        self.btn_mate_check.setToolTip("Komoringの手順に出てくる合駒が無駄合でないかを、すばやく確かめます（他の変化は調べません）")
+        self.btn_mate_check.setEnabled(False)
+        self.btn_mate_check.clicked.connect(lambda: self.verify_mate("line"))
+        self.btn_mate_alt = QPushButton("詳細検討")
+        self.btn_mate_alt.setToolTip("無駄合を除いたうえで、変化・非限定の手・合駒の扱いを詳しく調べます（時間がかかることがあります）")
+        self.btn_mate_alt.setEnabled(False)
+        self.btn_mate_alt.clicked.connect(lambda: self.verify_mate("alt"))
+        self.btn_mate_apply_v = QPushButton("検証済み手順を盤へ")
+        self.btn_mate_apply_v.setToolTip("「詳細検討」で直した（無駄合を除いた）手順を、変化も含めて棋譜として盤に取り込みます")
+        self.btn_mate_apply_v.setEnabled(False)
+        self.btn_mate_apply_v.clicked.connect(lambda: self.apply_mate_line(True))
+        self.kh_ask_n, self.kh_ask_sec = 0, 0.0      # 検証中にKomoringへ聞いた回数と時間
+        self.verified_pv = None
+        self.verified_game = None            # 詳細検討の変化つき棋譜（分岐棋譜として盤へ送る）
+        self.mate_report = None             # 詰み探索・検証の結果（盤を動かしても残す）: (棋譜の開始局面, HTML)
         self.last_mate = None
 
         # 盤の下の操作は、使う場面ごとのタブにまとめる（常に見えるのは「最初・戻る・進む…」の並びだけ）
@@ -1224,8 +1254,9 @@ class MainWindow(QMainWindow):
                                 [self.btn_watch]]), "棋譜・解析")
         self.tools.addTab(page([[self.btn_zumen, self.btn_zumen_out, self.btn_shot, self.btn_cap],
                                 [self.btn_edit, btn_turn, self.btn_tsumehai]]), "局面を作る")
-        self.tools.addTab(page([[self.btn_tsume, self.btn_mate, self.btn_mate_apply]]), "詰将棋")
+        self.tools.addTab(page([[self.btn_tsume, self.btn_mate, self.btn_mate_apply, self.btn_mate_check, self.btn_mate_alt, self.btn_mate_apply_v]]), "詰将棋")
         self.tools.setMaximumHeight(160)
+        self.tools.currentChanged.connect(lambda _i: self.update_tsume_banner())
         lv.addWidget(self.tools)
         lv.addWidget(self.game_label)
         self.boardw.positionEdited.connect(self.on_position_edited)
@@ -1384,6 +1415,13 @@ class MainWindow(QMainWindow):
     def rebuild_board(self):
         return core.board_from(self.start_sfen, self.moves[:self.cursor])
 
+    def _on_hidden_graph_tab(self):
+        """「局面を作る」「詰将棋」のタブでは評価値グラフを出さない。"""
+        try:
+            return self.tools.tabText(self.tools.currentIndex()) in ("局面を作る", "詰将棋")
+        except Exception:
+            return False
+
     def update_tsume_banner(self):
         """詰将棋モードのとき、目立つ帯と色つきのボタンで知らせる。"""
         try:
@@ -1403,7 +1441,7 @@ class MainWindow(QMainWindow):
                     self.graph.hide()
                 else:
                     self.tsume_banner.hide()
-                    self.graph.show()
+                    self.graph.setVisible(not self._on_hidden_graph_tab())
                 self.btn_tsume.setStyleSheet("")
         except Exception:
             pass
@@ -1430,6 +1468,9 @@ class MainWindow(QMainWindow):
         self.boardw.set_position(self.cur_board, last)
         self.list.clear()
         self.result.clear()
+        rep_ = getattr(self, "mate_report", None)       # 詰み探索・検証の結果は、盤を動かしても消さない
+        if rep_ and rep_[0] == self.start_sfen:
+            self.result.setHtml(rep_[1])
         turn = "先手" if self.cur_board.turn == shogi.BLACK else "後手"
         text = f"{self.cursor}手目まで　{turn}の手番"
         if safe(self.cur_board.is_checkmate):
@@ -2005,6 +2046,7 @@ class MainWindow(QMainWindow):
 
     def tsume_start(self, p):
         self.tsume = {"prob": p, "line": p["line"], "busy": False, "hint": 0, "pending": None}
+        self.mate_report = None
         self.tsume_seq += 1
         self.set_variations(None)
         self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
@@ -2117,6 +2159,13 @@ class MainWindow(QMainWindow):
                 eng.close()
             except Exception:
                 pass
+        eng2, self.tsume_oeng = getattr(self, "tsume_oeng", None), None
+        if eng2:
+            try:
+                eng2.stop()
+                eng2.close()
+            except Exception:
+                pass
 
     def _tsume_kh(self, sfen, ms=None):
         """詰将棋専用エンジン(KomoringHeights)の詰み探索。sfenは攻方番。戻り値 (状態, 手順)。
@@ -2156,6 +2205,46 @@ class MainWindow(QMainWindow):
                     if attempt == 1:
                         break
         return last
+
+    def _kh_oracle(self, sfen):
+        """棋慧の検証から呼ばれる：局面（攻方番）が普通のルールで詰むかを、KomoringHeightsに聞く。
+        戻り値 1=詰む / -1=詰まない / 0=分からない。
+        検証専用のエンジン（ハッシュ小さめ）を別に起動して使う（「詰みを探す」のエンジンとは別）。"""
+        t0 = time.time()
+        res, state = 0, "error"
+        try:
+            path = self._tsume_path()
+            if not path:
+                return 0
+            tries = [sfen]
+            try:
+                alt = core.mate_king_candidates(sfen, 1)[0][0]
+                if alt != sfen:
+                    tries.append(alt)
+            except Exception:
+                pass
+            for s in tries:
+                with self.tsume_olock:
+                    eng = getattr(self, "tsume_oeng", None)
+                    if eng is None or eng.proc is None or eng.proc.poll() is not None:
+                        eng = core.UsiEngine(path, {"USI_Hash": 16})
+                        eng.start()
+                        self.tsume_oeng = eng
+                    state, _pv, _n = eng.mate(s, self.kh_ask_ms)
+                if state in ("mate", "nomate", "timeout"):
+                    break
+            res = 1 if state == "mate" else (-1 if state == "nomate" else 0)
+            return res
+        except Exception:
+            return 0
+        finally:
+            dt = time.time() - t0
+            self.kh_ask_n += 1
+            self.kh_ask_sec += dt
+            key = "mate" if res > 0 else ("nomate" if res < 0 else "other")
+            c = self.kh_ask_by.setdefault(key, [0, 0.0])
+            c[0] += 1
+            c[1] += dt
 
     def _tsume_log(self, sfen, state, n, sec):
         """どの局面で何秒かかったかを kento_tsume_log.txt に記録する（遅いときの原因調べ用）。"""
@@ -2651,11 +2740,16 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def apply_mate_line(self):
-        """「詰みを探す」で見つかった手順を、棋譜として盤に取り込む（駒を動かしても消えない）。"""
+    def apply_mate_line(self, verified=False):
+        """「詰みを探す」で見つかった手順を、棋譜として盤に取り込む（駒を動かしても消えない）。
+        verified=True のときは、「詳細検討」で直した手順を取り込む。"""
         if not self.last_mate:
             return
         sfen, pv = self.last_mate
+        if verified is True:
+            if not self.verified_pv:
+                return
+            pv = list(self.verified_pv)
         try:
             b = shogi.Board(sfen)
             for u in pv:
@@ -2668,13 +2762,23 @@ class MainWindow(QMainWindow):
         self.tsume_seq += 1
         self.set_variations(None)
         self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
+        _vg = self.verified_game if (verified is True and self.verified_game) else None
         self.start_sfen, self.moves, self.cursor = sfen, list(pv), 0
         self.tsume_shown = (_prob, sfen) if _prob else None
+        if getattr(self, "mate_report", None):
+            self.mate_report = (sfen, self.mate_report[1])      # 取り込んだ手順の局面でも、結果を残す
         self.names = ["先手", "後手"]
         self.kif_comments, self.kif_comment_sfen, self.kif_comment_moves = {}, sfen, []
         self.kif_senkei = ("", "")
         self.refresh(analyze=False)
-        self.status.setText(f"詰み手順（{len(pv)}手）を棋譜として盤に取り込みました。「進む」で手順を見られます。"
+        _extra = ""
+        if _vg and _vg.get("variations"):
+            try:
+                self.set_variations(_vg)
+                _extra = f"変化が{len(_vg['variations'])}つあります（「変化」の選択欄で切り替えられます）。"
+            except Exception:
+                pass
+        self.status.setText(f"詰み手順（{len(pv)}手）を棋譜として盤に取り込みました。{_extra}「進む」で手順を見られます。"
                             "「ファイル」→「KIFを保存」、「コピー」→「KIFをコピー」で残せます")
 
     def on_mate(self, r):
@@ -2690,13 +2794,18 @@ class MainWindow(QMainWindow):
             pv = first["pv"]
             self.last_mate = (r["sfen"], list(pv))
             self.btn_mate_apply.setEnabled(True)
+            self.verified_pv = None
+            self.verified_game = None
+            self.btn_mate_apply_v.setEnabled(False)
+            self.btn_mate_check.setEnabled(tsume_verify is not None)
+            self.btn_mate_alt.setEnabled(tsume_verify is not None)
             b = shogi.Board(r["sfen"])
             n = len(pv)
             text = [f"## 詰みが見つかりました：{n}手詰（{sec:.1f}秒）", ""]
             if first["n"] and first["n"] != n:
                 text += [f"（エンジンは詰みまで{first['n']}手と報告。表示できた手順は{n}手分です）", ""]
             if r.get("engine") == "KomoringHeights":
-                text += ["詰将棋専用エンジン（KomoringHeights）の手順（最短とは限りません）：", "", core.pv_ja(b, pv, n), ""]
+                text += ["詰将棋専用エンジン（KomoringHeights）の手順（最短とは限りません）：", "", (tsume_verify.line_ja(r["sfen"], pv) if tsume_verify is not None else core.pv_ja(b, pv, n)), ""]
             else:
                 text += ["エンジンの手順（最短とは限りません）：", "", core.pv_ja(b, pv, n), ""]
             if first["king"]:
@@ -2720,7 +2829,9 @@ class MainWindow(QMainWindow):
                     k = next((i for i, (x, y) in enumerate(zip(cmp_, pv)) if x != y), min(len(cmp_), len(pv)))
                     text.append(f"棋譜は{len(cmp_)}手、エンジンは{n}手。{k + 1}手目から手順が違います"
                                 f"（同じ手数の別解・余詰め・エンジンの手順が最短でない、のいずれかです）。")
+            text += ["", "※KomoringHeightsの手順は、無駄合を含んでいる可能性があります。「手順検証」「詳細検討」で確かめられます。"]
             self.show_result("\n".join(text))
+            self.mate_report = (self.start_sfen, self.result.toHtml())
             self.status.setText(f"{n}手詰を発見（{sec:.1f}秒）　「詰み手順を盤へ」で棋譜にできます")
         elif st == "nomate":
             self.show_result(f"## 詰みはありません（不詰）\n\n{sec:.1f}秒で、この局面は詰まないと判定されました。")
@@ -2772,6 +2883,109 @@ class MainWindow(QMainWindow):
 
     def _has_second(self):
         return core.has_detail(self.evals)
+
+    def verify_mate(self, kind):
+        """「詰みを探す」の結果を、棋慧のエンジンで検証する（kind: line=手順検証 / alt=詳細検討）。"""
+        if not self.last_mate or tsume_verify is None:
+            return
+        sfen, pv = self.last_mate
+        self.btn_mate_check.setEnabled(False)
+        self.btn_mate_alt.setEnabled(False)
+        self.status.setText("棋慧エンジンで検証中…（短い問題なら数秒です）")
+
+        self.kh_ask_n, self.kh_ask_sec, self.kh_ask_by = 0, 0.0, {}
+
+        def work():
+            use_kh = False
+            try:
+                if kind == "line":
+                    res = tsume_verify.quick_check(sfen, list(pv), time_limit=120, fmt=core.move_ja)
+                else:
+                    # まず棋慧だけで解く（短い問題はこれが最速）。30秒で終わらなければKomoringの助けを借りる
+                    res = tsume_verify.detail(sfen, list(pv), time_limit=30, fmt=core.move_ja)
+                    if res.get("state") == "timeout" and self._tsume_path():
+                        try:
+                            import tsume_native
+                            use_kh = bool(tsume_native.set_oracle(self._kh_oracle))
+                        except Exception:
+                            use_kh = False
+                        if use_kh:
+                            res = tsume_verify.detail(sfen, list(pv), time_limit=150, fmt=core.move_ja)
+                            res["sec"] = res.get("sec", 0.0) + 30.0
+            except Exception as e:
+                res = {"state": "error", "msg": str(e), "sec": 0.0}
+            res["kind"], res["sfen"], res["pv"] = kind, sfen, list(pv)
+            res["kh_used"], res["kh_asks"], res["kh_sec"] = use_kh, self.kh_ask_n, self.kh_ask_sec
+            res["kh_by"] = {k: list(v) for k, v in self.kh_ask_by.items()}
+            try:
+                import tsume_native
+                tsume_native.set_oracle(None)
+            except Exception:
+                pass
+            self.sig.verify.emit(res)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_verify(self, r):
+        import html as _h
+        esc = lambda t: _h.escape(str(t))
+        same = bool(self.last_mate and self.last_mate[0] == r.get("sfen"))
+        if same:
+            self.btn_mate_check.setEnabled(tsume_verify is not None)
+            self.btn_mate_alt.setEnabled(tsume_verify is not None)
+        else:
+            return                                   # 検証中に別の局面へ移った：古い結果は出さない
+        st, sec, kind = r.get("state"), r.get("sec", 0.0), r.get("kind")
+        b = shogi.Board(r["sfen"])
+        kh = tsume_verify.line_ja(r["sfen"], r["pv"])
+        title = "手順検証" if kind == "line" else "詳細検討"
+        h = [f"<h3>{title}（棋慧エンジン）</h3>", f"<p>KomoringHeightsの手順：<br>{esc(kh)}</p>"]
+        if st in ("skip", "timeout", "error"):
+            h.append(f"<p>{esc(r.get('msg') or '検証できませんでした。')}</p>")
+        elif kind == "line":
+            if st == "pending":
+                h.append("<p>無駄合は見つかりませんでしたが、次の合駒は時間内に判定できませんでした（無駄合でないとは言い切れません）：</p>")
+                h.append(f"<p>{esc(' '.join(r.get('pending', [])))}</p>")
+            elif st == "warn":
+                h.append("<p><b><span style='color:#d32f2f'>Komoringの手順は正確でない可能性があります。</span></b></p>")
+                h.append(f"<p>無駄合： {esc(' '.join(r['futile']))}</p>")
+                if r.get("pending"):
+                    h.append(f"<p>※次の合駒は時間内に判定できませんでした： {esc(' '.join(r['pending']))}</p>")
+                h.append("<p>正しい手順や手数は「詳細検討」で調べられます（時間がかかることがあります）。</p>")
+            else:
+                h.append("<p>KomoringHeightsの手順に、無駄合は見つかりませんでした。</p>")
+                h.append("<p>※この手順1本の合駒だけを調べています。他の変化や余詰は「詳細検討」で調べられます。</p>")
+        else:
+            if r.get("kh_futile"):
+                h.append(f"<p>KomoringHeightsの手順は無駄合（{esc(' '.join(r['kh_futile']))}）を含んでいます。"
+                         f"それを除くと{r['kh_eff']}手の変化で、最長の変化ではありません。</p>")
+            h.append(f"<p>この問題の正しい詰み手数（無駄合を除いた最長の変化）： <b>{r['N']}手</b></p>")
+            if r.get("msg"):
+                h.append(f"<p><span style='color:#d32f2f'>{esc(r['msg'])}</span></p>")
+            for ttl, text, notes in r.get("blocks", []):
+                h.append(f"<h4>{esc(ttl)}</h4><p><b>{esc(text)}</b></p>")
+                for n in notes:
+                    h.append(f"<p>※{esc(n)}</p>")
+            h.append("<p>初手はKomoringHeightsの手を前提にしています（初手の余詰は調べていません）。</p>")
+        h.append(f"<p>棋慧エンジンの考慮時間：{sec:.1f}秒</p>")
+        if r.get("kh_used"):
+            by = r.get("kh_by", {})
+            names = {"mate": "詰み", "nomate": "不詰", "other": "時間切れ等"}
+            det = "、".join(f"{names[k]} {v[0]}回・{v[1]:.1f}秒" for k, v in by.items() if k in names)
+            h.append(f"<p>（うち、Komoringへの問い合わせ：{r.get('kh_asks', 0)}回・合計{r.get('kh_sec', 0.0):.1f}秒"
+                     + (f"　内訳：{det}" if det else "") + "）</p>")
+        else:
+            h.append("<p>（棋慧エンジン単独で検証しました）</p>")
+        if kind == "alt" and st in ("ok", "warn") and r.get("game") and r["game"].get("moves"):
+            self.verified_game = r["game"]
+            self.verified_pv = list(r["game"]["moves"])
+            self.btn_mate_apply_v.setEnabled(True)
+            if r["game"].get("variations"):
+                h.append("<p>「検証済み手順を盤へ」を押すと、変化も分岐棋譜として盤に取り込めます（「変化」の選択欄から切り替え）。</p>")
+        self.result.setHtml("".join(h))
+        self.mate_report = (self.start_sfen, self.result.toHtml())
+        self.tabs.setCurrentWidget(self.result)
+        self.status.setText(f"{title}：完了（{sec:.1f}秒）")
 
     def show_result(self, md):
         """この局面の解説の欄に出す（全局の結果は別のタブに残る）。"""
@@ -3501,6 +3715,19 @@ class MainWindow(QMainWindow):
             self.analyzing = False
             self.auto.setChecked(True)
             self.status.setText("設定を保存しました")
+
+    def changeEvent(self, e):
+        """最大化・全画面のときだけ、盤とグラフの「縮められる限界」を小さくする（画面の高さに収まらず、
+        部品が重なるのを防ぐ）。ウィンドウ表示のときの大きさは変えない。"""
+        super().changeEvent(e)
+        try:
+            from PyQt6.QtCore import QEvent
+            if e.type() == QEvent.Type.WindowStateChange:
+                compact = self.isMaximized() or self.isFullScreen()
+                self.boardw.setMinimumSize(280, 290) if compact else self.boardw.setMinimumSize(420, 480)
+                self.graph.setMinimumHeight(70 if compact else 130)
+        except Exception:
+            pass
 
     def closeEvent(self, e):
         self.gen += 1

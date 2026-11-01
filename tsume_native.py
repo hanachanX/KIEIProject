@@ -54,7 +54,12 @@ class _Context:
             self.ptr = None
 
 
-def _run(op, board=None, n=0, color=0, seed=0, budget=600, seconds=180, text=None):
+TIMEOUT = 180.0   # 1回の計算の制限時間(秒)。超えると ValueError('timeout')
+
+
+def _run(op, board=None, n=0, color=0, seed=0, budget=600, seconds=None, text=None):
+    if seconds is None:
+        seconds = TIMEOUT
     if not hasattr(_local, "context"):
         _local.context = _Context()
     ctx = _local.context
@@ -174,3 +179,42 @@ def generate(n_plies, rng=None, budget=600, time_limit=180):
         return None
     sfen, line = result.split("\n")
     return sfen, line.split()
+
+
+def set_oracle(fn):
+    """Optional: fn(sfen:str) -> 1 (mate under normal rules) / -1 (no mate) / 0 (unknown), or None to clear.
+    Used by the native search to discard attacker positions that cannot be mate (an external fast engine answers).
+    Needs a DLL built with tsume_set_oracle; returns False when the DLL does not have it."""
+    if not hasattr(_local, "context"):
+        _local.context = _Context()
+    ctx = _local.context
+    try:
+        setter = ctx.lib.tsume_set_oracle
+    except AttributeError:
+        return False
+    setter.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    setter.restype = None
+    if fn is None:
+        setter(ctx.ptr, None)
+        _local.oracle_cb = None
+        return True
+    proto = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_char_p)
+
+    def _cb(text):
+        try:
+            return int(fn(text.decode("ascii")))
+        except Exception:
+            return 0
+    cb = proto(_cb)
+    _local.oracle_cb = cb            # keep a reference so it is not garbage collected
+    setter(ctx.ptr, ctypes.cast(cb, ctypes.c_void_p))
+    return True
+
+
+def oracle_stats():
+    """(number of questions asked, number of positions discarded) in this thread's context."""
+    try:
+        a, b = _run("oracle_stats", text="").split()
+        return int(a), int(b)
+    except Exception:
+        return 0, 0
