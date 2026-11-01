@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <random>
@@ -10,8 +11,18 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#ifndef ORD
+#define ORD 1
+#endif
+#ifndef AORD
+#define AORD 0
+#endif
+#ifndef TSUME_CAP
+#define TSUME_CAP 8000000
+#endif
 namespace {
 constexpr int P=1,L=2,N=3,S=4,G=5,B=6,R=7,K=8;
 const int totals[9]={0,18,4,4,4,4,2,2,0};
@@ -46,10 +57,18 @@ Move parse_move(const std::string& text) {
     if((text.size()!=4&&text.size()!=5)||(text.size()==5&&text[4]!='+'))throw std::invalid_argument("Invalid USI move");
     return {square(text[0],text[1]),square(text[2],text[3]),0,text.size()==5};
 }
+struct SmallOrder {
+    int v[8];int n=0;
+    void push_back(int x){v[n++]=x;}
+    void clear(){n=0;}
+    void erase_value(int x){int j=0;for(int i=0;i<n;++i)if(v[i]!=x)v[j++]=v[i];n=j;}
+    const int* begin() const {return v;}
+    const int* end() const {return v+n;}
+};
 struct Board {
     std::array<int,81> sq{};
     std::array<std::array<int,9>,2> hand{};
-    std::array<std::vector<int>,2> order;
+    std::array<SmallOrder,2> order;
     int turn=0;
     int king(int c) const { for(int s=0;s<81;++s) if(sq[s]==sign(c)*K)return s;return -1; }
     void add(int c,int p,int n=1) {
@@ -59,7 +78,7 @@ struct Board {
     }
     void remove(int c,int p) {
         if(--hand[c][p]==0) {
-            auto& a=order[c];a.erase(std::remove(a.begin(),a.end(),p),a.end());
+            order[c].erase_value(p);
         }
     }
     static Board parse(const std::string& sfen) {
@@ -110,8 +129,9 @@ struct Board {
     }
     bool attacks(int pt,int from,int to,int c) const {
         if(from==to||from<0||to<0)return false;
-        int dr=to/9-from/9,df=to%9-from%9,forward=c?dr:-dr;
-        int ar=std::abs(dr),af=std::abs(df);bool ray=false;
+        static const struct Tb{signed char r[81],f[81];Tb(){for(int i=0;i<81;++i){r[i]=(signed char)(i/9);f[i]=(signed char)(i%9);}}} tb;
+        int dr=tb.r[to]-tb.r[from],df=tb.f[to]-tb.f[from],forward=c?dr:-dr;
+        int ar=dr<0?-dr:dr,af=df<0?-df:df;bool ray=false;
         switch(pt) {
         case P:return forward==1&&df==0;
         case L:ray=forward>0&&df==0;break;
@@ -126,15 +146,33 @@ struct Board {
         case 14:if(ar==1&&af==1)return true;ray=dr==0||df==0;break;
         }
         if(!ray)return false;
-        int sr=(dr>0)-(dr<0),sf=(df>0)-(df<0);
-        for(int r=from/9+sr,f=from%9+sf;r!=to/9||f!=to%9;r+=sr,f+=sf)
-            if(sq[r*9+f])return false;
+        int step=((dr>0)-(dr<0))*9+((df>0)-(df<0));
+        for(int i=from+step;i!=to;i+=step)
+            if(sq[i])return false;
         return true;
     }
     bool attacked(int c,int target,bool no_king=false) const {
         if(target<0)return false;
-        for(int s=0;s<81;++s)if(sq[s]&&color_of(sq[s])==c&&(!no_king||std::abs(sq[s])!=K))
-            if(attacks(std::abs(sq[s]),s,target,c))return true;
+        static const int DR[8]={-1,-1,-1,0,0,1,1,1},DF[8]={-1,0,1,-1,1,-1,0,1};
+        int tr=target/9,tf=target%9;
+        for(int d=0;d<8;++d) {
+            int r=tr+DR[d],f=tf+DF[d];
+            while(r>=0&&r<9&&f>=0&&f<9) {
+                int v=sq[r*9+f];
+                if(v) {
+                    if(color_of(v)==c&&(!no_king||std::abs(v)!=K)&&attacks(std::abs(v),r*9+f,target,c))return true;
+                    break;
+                }
+                r+=DR[d];f+=DF[d];
+            }
+        }
+        int kr=tr-(c?2:-2);
+        if(kr>=0&&kr<9) {
+            for(int df=-1;df<=1;df+=2) {
+                int f=tf+df;
+                if(f>=0&&f<9&&sq[kr*9+f]==sign(c)*N)return true;
+            }
+        }
         return false;
     }
     bool check() const {return attacked(1-turn,king(turn));}
@@ -159,23 +197,68 @@ struct Board {
         if(m.drop==P)for(int r=0;r<9;++r)if(sq[r*9+m.to%9]==sign(turn)*P)return false;
         return true;
     }
+    // Fast legal(): temporarily edits sq and restores it (no Board copy). Same result as before.
+    struct Undo {Board* b;int from,to,fv,tv;
+        ~Undo(){if(from>=0)b->sq[from]=fv;b->sq[to]=tv;}};
     bool legal(const Move& m) const {
         if(!pseudo(m))return false;
-        Board q=*this;q.push(m);
-        if(q.attacked(q.turn,q.king(turn)))return false;
+        return legal_body(m);
+    }
+    // For moves produced by board_moves(turn): only the mobility test of pseudo() is still needed.
+    bool legal_bm(const Move& m) const {
+        if(!m.promotion&&!mobile(std::abs(sq[m.from]),m.to,turn))return false;
+        return legal_body(m);
+    }
+    bool legal_body(const Move& m) const {
+        Board* self=const_cast<Board*>(this);
+        int mover=turn,opp=turn^1;
+        Undo u{self,m.from,m.to,m.from>=0?sq[m.from]:0,sq[m.to]};
+        if(m.from<0)self->sq[m.to]=sign(mover)*m.drop;
+        else {int pt=std::abs(sq[m.from]);self->sq[m.to]=sign(mover)*(m.promotion?promoted[pt]:pt);self->sq[m.from]=0;}
+        if(attacked(opp,king(mover)))return false;
         // Match python-shogi's pawn-drop-mate test, including its documented limitation.
         if(m.drop!=P)return true;
-        int k=q.king(q.turn);
-        if(k<0||!q.attacks(P,m.to,k,turn))return true;
-        for(int s=0;s<81;++s)if(q.attacks(K,k,s,q.turn)&&(!q.sq[s]||color_of(q.sq[s])!=q.turn))
-            if(!q.attacked(turn,s))return true;
-        return q.attacked(q.turn,m.to,true);
+        int k=king(opp);
+        if(k<0||!attacks(P,m.to,k,mover))return true;
+        for(int s=0;s<81;++s)if(attacks(K,k,s,opp)&&(!sq[s]||color_of(sq[s])!=opp))
+            if(!attacked(mover,s))return true;
+        return attacked(opp,m.to,true);
+    }
+    // True if the move gives check to the opponent king (no Board copy).
+    bool gives_check(const Move& m) const {
+        Board* self=const_cast<Board*>(this);
+        int mover=turn;
+        Undo u{self,m.from,m.to,m.from>=0?sq[m.from]:0,sq[m.to]};
+        if(m.from<0)self->sq[m.to]=sign(mover)*m.drop;
+        else {int pt=std::abs(sq[m.from]);self->sq[m.to]=sign(mover)*(m.promotion?promoted[pt]:pt);self->sq[m.from]=0;}
+        return attacked(mover,king(mover^1));
     }
     std::vector<Move> board_moves(int c) const {
-        std::vector<Move> out;
+        std::vector<Move> out;out.reserve(64);
+        const int fw=c?1:-1;
         for(int s=0;s<81;++s)if(sq[s]&&color_of(sq[s])==c) {
             int pt=std::abs(sq[s]);
-            for(int t=0;t<81;++t)if((!sq[t]||color_of(sq[t])!=c)&&attacks(pt,s,t,c)) {
+            bool cand[81];std::fill(cand,cand+81,false);
+            int sr=s/9,sf=s%9;
+            auto stepto=[&](int dr,int df){int r=sr+dr,f=sf+df;if(r>=0&&r<9&&f>=0&&f<9)cand[r*9+f]=true;};
+            auto rayto=[&](int dr,int df){int r=sr+dr,f=sf+df;
+                while(r>=0&&r<9&&f>=0&&f<9){cand[r*9+f]=true;if(sq[r*9+f])break;r+=dr;f+=df;}};
+            switch(pt) {
+            case P:stepto(fw,0);break;
+            case L:rayto(fw,0);break;
+            case N:stepto(2*fw,-1);stepto(2*fw,1);break;
+            case S:stepto(fw,-1);stepto(fw,0);stepto(fw,1);stepto(-fw,-1);stepto(-fw,1);break;
+            case G:case 9:case 10:case 11:case 12:
+                stepto(fw,-1);stepto(fw,0);stepto(fw,1);stepto(0,-1);stepto(0,1);stepto(-fw,0);break;
+            case K:for(int dr=-1;dr<=1;++dr)for(int df=-1;df<=1;++df)if(dr||df)stepto(dr,df);break;
+            case B:rayto(-1,-1);rayto(-1,1);rayto(1,-1);rayto(1,1);break;
+            case R:rayto(-1,0);rayto(1,0);rayto(0,-1);rayto(0,1);break;
+            case 13:rayto(-1,-1);rayto(-1,1);rayto(1,-1);rayto(1,1);
+                stepto(-1,0);stepto(1,0);stepto(0,-1);stepto(0,1);break;
+            case 14:rayto(-1,0);rayto(1,0);rayto(0,-1);rayto(0,1);
+                stepto(-1,-1);stepto(-1,1);stepto(1,-1);stepto(1,1);break;
+            }
+            for(int t=0;t<81;++t)if(cand[t]&&(!sq[t]||color_of(sq[t])!=c)) {
                 out.push_back({s,t,0,false});
                 if(promoted[pt]&&(zone(s,c)||zone(t,c)))out.push_back({s,t,0,true});
             }
@@ -184,7 +267,7 @@ struct Board {
     }
     bool checkmate() const {
         if(!check())return false;
-        for(auto m:board_moves(turn))if(legal(m))return false;
+        for(auto m:board_moves(turn))if(legal_bm(m))return false;
         for(int s=0;s<81;++s)if(!sq[s])for(int p=P;p<K;++p)
             if(hand[turn][p]&&legal({-1,s,p,false}))return false;
         return true;
@@ -216,35 +299,64 @@ struct Pos {
 
 struct Timeout {};
 struct Solver {
-    std::unordered_map<std::string,bool> ca,cd,cf;
+    std::unordered_map<uint64_t,bool> ca,cd,cf;
+    // Optional oracle: returns 1 (mate under normal rules), -1 (no mate), 0 (unknown). Used only to prune attacker nodes.
+    int (*oracle)(const char*)=nullptr;
+    std::unordered_map<uint64_t,int> ost;
+    long long o_calls=0,o_pruned=0;
+    int oracle_min=5;
     std::string error;
     std::string last_output;
     bool timed=false;
     std::chrono::steady_clock::time_point deadline;
     void tick(){if(timed&&std::chrono::steady_clock::now()>=deadline)throw Timeout{};}
-    void clear(){ca.clear();cd.clear();cf.clear();}
-    std::string key(const Board& b,int n) {std::string k;
-        k.reserve(110);for(int v:b.sq)k+=char(v+16);k+=char(b.turn);
-        for(auto& h:b.hand)for(int p=P;p<K;++p){k+=char(h[p]&255);k+=char((h[p]>>8)&255);}
-        for(int i=0;i<4;++i)k+=char((unsigned(n)>>(i*8))&255);return k;
+    void clear(){ca.clear();cd.clear();cf.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}
+    std::unordered_map<uint64_t,Move> chint,dhint;   // move-ordering hints (do not affect results)
+    bool hints_on=false;
+    size_t cache_cap=TSUME_CAP;
+    void trim(){if(ca.size()+cd.size()+cf.size()+dom_count>cache_cap){ca.clear();cd.clear();cf.clear();ost.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}}
+    static uint64_t fnv(const std::string& k,uint64_t h=1469598103934665603ULL){for(unsigned char c:k){h^=c;h*=1099511628211ULL;}h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;}
+    uint64_t key(const Board& b,int n) {
+        uint64_t h=1469598103934665603ULL;
+        auto put=[&](unsigned c){h^=(c&255u);h*=1099511628211ULL;};
+        for(int v:b.sq)put(unsigned(v+16));
+        put(unsigned(b.turn));
+        for(auto& hh:b.hand)for(int p=P;p<K;++p){put(unsigned(hh[p]&255));put(unsigned((hh[p]>>8)&255));}
+        for(int i=0;i<4;++i)put((unsigned(n)>>(i*8))&255u);
+        h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;
     }
     std::vector<Move> checks(const Board& b) {
         tick();std::vector<Move> out;int k=b.king(1);
         for(int p:b.order[0])if(b.hand[0][p]>0)for(int s=0;s<81;++s)
             if(!b.sq[s]&&b.attacks(p,k,s,1)) {Move m{-1,s,p,false};if(b.legal(m))out.push_back(m);}
-        for(auto m:b.board_moves(0))if(b.pseudo(m)){Board q=b;q.push(m);if(q.check())out.push_back(m);}
+        for(auto m:b.board_moves(0))if(b.pseudo(m)){if(b.gives_check(m))out.push_back(m);}
         return out;
     }
-    bool futile(const Board& b,const Move& d,int a) {
-        auto k=key(b,0)+d.usi();auto it=cf.find(k);if(it!=cf.end())return it->second;
-        Board q=b;q.push(d);bool res=false;
-        for(bool prom:{false,true}) {Move m{a,d.to,0,prom};if(!q.pseudo(m))continue;
-            Board r=q;r.push(m);if(r.check()&&evasions(r).empty()){res=true;break;}}
+    std::unordered_set<uint64_t> inprog;
+    int fdepth=0,maxDepth=6;
+    // Futile interposition: after the slider captures the dropped piece, remove that piece from the attacker's hand;
+    // if mate is still reached within n plies, the drop is futile (n=0: only when no evasion remains).
+    bool futile(const Board& b,const Move& d,int a,int n=0) {
+        auto k=key(b,n)*0x9E3779B97F4A7C15ULL+uint64_t(d.to+1)*131+uint64_t(d.drop)*17+(d.from<0?7:uint64_t(d.from)*257)+(d.promotion?3:0);k^=k>>31;auto it=cf.find(k);if(it!=cf.end())return it->second;
+        if(inprog.count(k))return false;
+        bool wide=n>=1&&fdepth<maxDepth;
+        if(wide){inprog.insert(k);++fdepth;}
+        bool res=false;
+        try {
+            Board q=b;q.push(d);
+            for(bool prom:{false,true}) {Move m{a,d.to,0,prom};if(!q.pseudo(m))continue;
+                Board r=q;r.push(m);if(!r.check())continue;
+                if(!wide){if(!has_evasion(r,0)){res=true;break;}}
+                else {r.remove(0,d.drop);if(defenders(r,n)){res=true;break;}}
+            }
+        } catch(...) {if(wide){inprog.erase(k);--fdepth;}throw;}
+        if(wide){inprog.erase(k);--fdepth;}
         cf[k]=res;return res;
     }
-    std::vector<Move> evasions(const Board& b) {
+    std::vector<Move> evasions(const Board& b,int bud=0) {
         tick();std::vector<Move> out;
-        for(auto m:b.board_moves(1))if(b.legal(m))out.push_back(m);
+        if(b.turn==1){for(auto m:b.board_moves(1))if(b.legal_bm(m))out.push_back(m);}
+        else for(auto m:b.board_moves(1))if(b.legal(m))out.push_back(m);
         int k=b.king(1),a=-1,count=0;
         for(int s=0;s<81;++s)if(b.sq[s]>0&&b.attacks(b.sq[s],s,k,0)){a=s;++count;}
         if(count!=1)return out;
@@ -254,27 +366,153 @@ struct Solver {
         for(int i=1;i<dist;++i) {
             int s=(k/9+sr*i)*9+k%9+sf*i;
             for(int p:b.order[1])if(b.hand[1][p]>0) {
-                Move m{-1,s,p,false};if(b.legal(m)&&!futile(b,m,a))out.push_back(m);
+                Move m{-1,s,p,false};if(b.legal(m)&&!futile(b,m,a,bud))out.push_back(m);
             }
         }
         return out;
     }
+    // Like evasions() but returns interposition drops without testing futility (caller tests lazily).
+    void evasions_split(const Board& b,std::vector<Move>& normal,std::vector<Move>& drops,int& att) {
+        tick();att=-1;
+        if(b.turn==1){for(auto m:b.board_moves(1))if(b.legal_bm(m))normal.push_back(m);}
+        else for(auto m:b.board_moves(1))if(b.legal(m))normal.push_back(m);
+        int k=b.king(1),a=-1,count=0;
+        for(int s=0;s<81;++s)if(b.sq[s]>0&&b.attacks(b.sq[s],s,k,0)){a=s;++count;}
+        if(count!=1)return;
+        int pt=std::abs(b.sq[a]),dr=a/9-k/9,df=a%9-k%9,dist=std::max(std::abs(dr),std::abs(df));
+        if(!(pt==L||pt==B||pt==R||pt==13||pt==14)||dist<=1||!(dr==0||df==0||std::abs(dr)==std::abs(df)))return;
+        int sr=(dr>0)-(dr<0),sf=(df>0)-(df<0);
+        for(int i=1;i<dist;++i) {
+            int s=(k/9+sr*i)*9+k%9+sf*i;
+            for(int p:b.order[1])if(b.hand[1][p]>0) {
+                Move m{-1,s,p,false};if(b.legal(m))drops.push_back(m);
+            }
+        }
+        att=a;
+    }
+    // Same as !evasions(b,bud).empty(), but stops at the first evasion found.
+    bool has_evasion(const Board& b,int bud) {
+        std::vector<Move> normal,drops;int att;evasions_split(b,normal,drops,att);
+        if(!normal.empty())return true;
+        for(auto& d:drops)if(!futile(b,d,att,bud))return true;
+        return false;
+    }
+    // Hand-dominance cache: a result for one hand pair also answers positions with a better/worse hand pair.
+    struct DomEntry {uint8_t a[7],d[7];int n;bool res;};
+    std::unordered_map<uint64_t,std::vector<DomEntry>> dom[2];
+    size_t dom_count=0;
+    bool dom_on=true;
+    static uint64_t dom_key(const Board& b,int n) {
+        uint64_t h=1469598103934665603ULL;
+        auto put=[&](unsigned c){h^=(c&255u);h*=1099511628211ULL;};
+        for(int v:b.sq)put(unsigned(v+16));
+        put(unsigned(b.turn));
+        for(int i=0;i<4;++i)put((unsigned(n)>>(i*8))&255u);
+        h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;
+    }
+    bool dom_get(int w,const Board& b,int n,bool& res) {
+        if(!dom_on)return false;
+        auto it=dom[w].find(dom_key(b,0));if(it==dom[w].end())return false;
+        uint8_t a[7],d[7];
+        // attacker is color 0, defender color 1, regardless of whose turn it is
+        for(int i=0;i<7;++i){a[i]=(uint8_t)std::min(255,b.hand[0][i+1]);d[i]=(uint8_t)std::min(255,b.hand[1][i+1]);}
+        for(auto& e:it->second) {
+            if(e.res) {
+                bool ok=n>=e.n;for(int i=0;i<7&&ok;++i)ok=e.a[i]<=a[i]&&e.d[i]>=d[i];
+                if(ok){res=true;return true;}
+            } else {
+                bool ok=n<=e.n;for(int i=0;i<7&&ok;++i)ok=a[i]<=e.a[i]&&d[i]>=e.d[i];
+                if(ok){res=false;return true;}
+            }
+        }
+        return false;
+    }
+    void dom_put(int w,const Board& b,int n,bool res) {
+        if(!dom_on)return;
+        DomEntry e;for(int i=0;i<7;++i){e.a[i]=(uint8_t)std::min(255,b.hand[0][i+1]);e.d[i]=(uint8_t)std::min(255,b.hand[1][i+1]);}
+        e.res=res;e.n=n;auto& v=dom[w][dom_key(b,0)];
+        // drop entries that the new one makes redundant, keep lists short
+        if(v.size()>=16)v.erase(v.begin());
+        v.push_back(e);++dom_count;
+    }
     bool mate(const Board& b,int n) {
-        tick();auto k=key(b,n);auto it=ca.find(k);if(it!=ca.end())return it->second;
+        bool r;if(dom_get(0,b,n,r))return r;
+        r=mate_impl(b,n);dom_put(0,b,n,r);return r;
+    }
+    bool defenders(const Board& b,int n) {
+        bool r;if(dom_get(1,b,n,r))return r;
+        r=defenders_impl(b,n);dom_put(1,b,n,r);return r;
+    }
+    bool mate_impl(const Board& b,int n) {
+        tick();trim();auto k=key(b,n);auto it=ca.find(k);if(it!=ca.end())return it->second;
+        if(oracle&&n>=oracle_min&&b.turn==0) {
+            auto ok=key(b,0);auto oi=ost.find(ok);int st;
+            if(oi!=ost.end())st=oi->second;
+            else {++o_calls;st=oracle(b.sfen().c_str());ost[ok]=st;}
+            if(st<0){++o_pruned;return ca[k]=false;}
+        }
+        uint64_t hk=0;bool have_h=false;Move hm;
+        if(hints_on&&n>=3) {
+            hk=key(b,0);auto hi=chint.find(hk);
+            if(hi!=chint.end()) {
+                have_h=true;hm=hi->second;
+                Board q=b;q.push(hm);
+                if(defenders(q,n-1))return ca[k]=true;
+            }
+        }
         std::vector<std::pair<size_t,Move>> scored;
-        for(auto m:checks(b)) {Board q=b;q.push(m);auto ev=evasions(q);
-            if(ev.empty())return ca[k]=true;scored.push_back({ev.size(),m});}
+        for(auto m:checks(b)) {Board q=b;q.push(m);
+            size_t nb=0;if(q.turn==1){for(auto e:q.board_moves(1))if(q.legal_bm(e))++nb;}else{for(auto e:q.board_moves(1))if(q.legal(e))++nb;}
+            if(nb==0){auto ev=evasions(q,n-1);
+                if(ev.empty()){if(hints_on&&n>=3)chint[key(b,0)]=m;return ca[k]=true;}scored.push_back({ev.size(),m});}
+            else scored.push_back({nb,m});}
         if(n>=3) {
-            std::stable_sort(scored.begin(),scored.end(),[](const auto& a,const auto& b){return a.first<b.first;});
-            for(auto& v:scored){Board q=b;q.push(v.second);if(defenders(q,n-1))return ca[k]=true;}
+            if(AORD==0)std::stable_sort(scored.begin(),scored.end(),[](const auto& a,const auto& b){return a.first<b.first;});
+            else std::stable_sort(scored.begin(),scored.end(),[&](const auto& x,const auto& y){
+                auto sc=[&](const std::pair<size_t,Move>& v){const Move& m=v.second;size_t base=v.first*4;
+                    if(AORD==1)return base+(m.from>=0&&b.sq[m.to]?0:2)+(m.from<0?1:0);
+                    if(AORD==2)return base+(m.from<0?0:2)+(m.from>=0&&b.sq[m.to]?0:1);
+                    return base+(m.from<0?(m.drop==P?1:2):0);};
+                return sc(x)<sc(y);});
+            for(auto& v:scored){
+                if(have_h&&v.second.from==hm.from&&v.second.to==hm.to&&v.second.drop==hm.drop&&v.second.promotion==hm.promotion)continue;
+                Board q=b;q.push(v.second);
+                if(defenders(q,n-1)){if(hints_on)chint[key(b,0)]=v.second;return ca[k]=true;}}
         }
         return ca[k]=false;
     }
-    bool defenders(const Board& b,int n) {
+    bool defenders_impl(const Board& b,int n) {
         tick();auto k=key(b,n);auto it=cd.find(k);if(it!=cd.end())return it->second;
-        auto moves=evasions(b);if(moves.empty())return cd[k]=true;
-        if(n<2)return cd[k]=false;
-        for(auto m:moves){Board q=b;q.push(m);if(!mate(q,n-1))return cd[k]=false;}
+        uint64_t hk=0;
+        if(hints_on&&n>=2) {
+            hk=key(b,0);auto hi=dhint.find(hk);
+            if(hi!=dhint.end()) {
+                Move hm=hi->second;Board q=b;q.push(hm);
+                if(!mate(q,n-1)) {
+                    if(hm.from>=0)return cd[k]=false;
+                    std::vector<Move> nm,dr;int at;evasions_split(b,nm,dr,at);
+                    if(!futile(b,hm,at,n))return cd[k]=false;
+                }
+            }
+        }
+        std::vector<Move> normal,drops;int att;evasions_split(b,normal,drops,att);
+        if(n<2) {
+            if(!normal.empty())return cd[k]=false;
+            for(auto& d:drops)if(!futile(b,d,att,n))return cd[k]=false;
+            return cd[k]=true;
+        }
+        if(ORD==1)std::stable_sort(normal.begin(),normal.end(),[&](const Move& x,const Move& y){
+            auto sc=[&](const Move& m){return (b.sq[m.to]?0:2)+(std::abs(b.sq[m.from])==K?0:1);};return sc(x)<sc(y);});
+        if(ORD==3)std::stable_sort(normal.begin(),normal.end(),[&](const Move& x,const Move& y){
+            auto sc=[&](const Move& m){return b.sq[m.to]?0:(std::abs(b.sq[m.from])==K?1:2);};return sc(x)<sc(y);});
+        if(ORD==4||ORD==5){std::stable_sort(normal.begin(),normal.end(),[&](const Move& x,const Move& y){
+            auto sc=[&](const Move& m){return (b.sq[m.to]?0:2)+(std::abs(b.sq[m.from])==K?0:1);};return sc(x)<sc(y);});
+            std::stable_sort(drops.begin(),drops.end(),[&](const Move& x,const Move& y){return ORD==4?x.drop<y.drop:x.drop>y.drop;});}
+        if(ORD==2)std::stable_sort(normal.begin(),normal.end(),[&](const Move& x,const Move& y){
+            auto sc=[&](const Move& m){return std::abs(b.sq[m.from])==K?0:1;};return sc(x)<sc(y);});
+        for(auto m:normal){Board q=b;q.push(m);if(!mate(q,n-1)){if(hints_on)dhint[key(b,0)]=m;return cd[k]=false;}}
+        for(auto& d:drops){Board q=b;q.push(d);
+            if(!mate(q,n-1)&&!futile(b,d,att,n)){if(hints_on)dhint[key(b,0)]=d;return cd[k]=false;}}
         return cd[k]=true;
     }
     std::vector<Move> solve(const Board& b,int n) {
@@ -285,7 +523,7 @@ struct Solver {
         out.clear();int remaining=n;
         while(true) {
             tick();auto wins=solve(b,remaining);if(wins.size()!=1)return false;
-            out.push_back(wins[0]);b.push(wins[0]);auto ev=evasions(b);if(ev.empty())return true;
+            out.push_back(wins[0]);b.push(wins[0]);auto ev=evasions(b,remaining-1);if(ev.empty())return true;
             Move best;bool found=false;int best_len=-1;
             for(auto d:ev){Board q=b;q.push(d);for(int k=1;k<remaining-1;k+=2)if(mate(q,k)) {
                 if(k>best_len){best=d;best_len=k;found=true;}break;}}
@@ -367,7 +605,7 @@ struct Solver {
     }
 };
 std::string move_text(const std::vector<Move>& moves){std::string out;for(auto m:moves){if(!out.empty())out+=' ';out+=m.usi();}return out;}
-std::string run(Solver& s,const std::string& op,const std::string& text,int n,int color,unsigned long long seed,int budget,double seconds) {
+std::string run_inner(Solver& s,const std::string& op,const std::string& text,int n,int color,unsigned long long seed,int budget,double seconds) {
     if(op=="clear"){s.clear();return "";}
     if(op=="generate")return s.generate(n,seed,budget,seconds);
     if(op=="random"){std::mt19937_64 rng(seed);Pos p;return s.random_pos(rng,p)?p.board(1).sfen():"";}
@@ -376,6 +614,8 @@ std::string run(Solver& s,const std::string& op,const std::string& text,int n,in
         if(!std::getline(in,q)||!std::getline(in,p)||!std::getline(in,m))throw std::invalid_argument("Invalid forward arguments");
         return s.forward(Pos::from(Board::parse(q)),parse_move(m),Pos::from(Board::parse(p)),color)?"1":"0";
     }
+    if(op=="oracle_min"){s.oracle_min=n<3?3:n;return "";}
+    if(op=="oracle_stats")return std::to_string(s.o_calls)+" "+std::to_string(s.o_pruned);
     Board b=Board::parse(text);
     if(b.king(1)<0)throw std::invalid_argument("Defender king is required");
     if(op=="checks")return move_text(s.checks(b));
@@ -391,7 +631,7 @@ std::string run(Solver& s,const std::string& op,const std::string& text,int n,in
     }
     if(op=="futile") {
         auto sep=text.find('\n');if(sep==std::string::npos||n<0||n>=81)throw std::invalid_argument("Invalid futile arguments");
-        return s.futile(b,parse_move(text.substr(sep+1)),n)?"1":"0";
+        return s.futile(b,parse_move(text.substr(sep+1)),n,budget)?"1":"0";
     }
     if(op=="line"||op=="verify") {std::vector<Move> moves;
         bool ok=op=="line"?s.line(b,n,moves):s.verify(b,n,moves);return ok?move_text(moves):"-";}
@@ -403,7 +643,17 @@ std::string run(Solver& s,const std::string& op,const std::string& text,int n,in
     if(op=="unmove"){std::string out;for(auto& v:s.unmove(p,color))out+=v.first.board(color).sfen()+"\t"+v.second.usi()+"\n";return out;}
     throw std::invalid_argument("Unknown operation");
 }
+std::string run(Solver& s,const std::string& op,const std::string& text,int n,int color,unsigned long long seed,int budget,double seconds) {
+    bool use=seconds>0&&std::isfinite(seconds)&&op!="generate"&&op!="search";
+    if(!use)return run_inner(s,op,text,n,color,seed,budget,seconds);
+    s.timed=true;
+    s.deadline=std::chrono::steady_clock::now()+std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+    try{auto r=run_inner(s,op,text,n,color,seed,budget,seconds);s.timed=false;return r;}
+    catch(const Timeout&){s.timed=false;throw std::runtime_error("timeout");}
+    catch(...){s.timed=false;throw;}
 }
+}
+void TSUME_CALL tsume_set_oracle(void* p,int (TSUME_CALL *fn)(const char*)){if(p)static_cast<Solver*>(p)->oracle=fn;}
 void* TSUME_CALL tsume_create(){try{return new Solver;}catch(...){return nullptr;}}
 void TSUME_CALL tsume_destroy(void* p){delete static_cast<Solver*>(p);}
 const char* TSUME_CALL tsume_error(void* p){return p?static_cast<Solver*>(p)->error.c_str():"Null context";}
