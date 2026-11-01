@@ -823,7 +823,7 @@ class SettingsDialog(QDialog):
         self.key = QLineEdit(cfg.get("gemini_api_key", ""))
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("Gemini APIキー", self.key)
-        self.model = QLineEdit(cfg.get("gemini_model", "gemini-2.5-flash"))
+        self.model = QLineEdit(cfg.get("gemini_model", "gemini-3.8-flash"))
         form.addRow("Geminiモデル名", self.model)
         self.okey = QLineEdit(cfg.get("openai_api_key", ""))
         self.okey.setEchoMode(QLineEdit.EchoMode.Password)
