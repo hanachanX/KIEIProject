@@ -2,6 +2,7 @@
 *.obj
 *.lib
 *.exp
+*.exe
 build/
 __pycache__/
 kiei_error.txt

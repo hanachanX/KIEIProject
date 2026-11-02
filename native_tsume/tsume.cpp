@@ -1,3 +1,6 @@
+#ifndef ALLCAP
+#define ALLCAP 1
+#endif
 #include "tsume.h"
 #include <algorithm>
 #include <array>
@@ -345,10 +348,15 @@ struct Solver {
         bool res=false;
         try {
             Board q=b;q.push(d);
-            for(bool prom:{false,true}) {Move m{a,d.to,0,prom};if(!q.pseudo(m))continue;
-                Board r=q;r.push(m);if(!r.check())continue;
-                if(!wide){if(!has_evasion(r,0)){res=true;break;}}
-                else {r.remove(0,d.drop);if(defenders(r,n)){res=true;break;}}
+            // 合駒は、王手をかけている駒（a）だけでなく、攻め方のどの駒で取ってもよい（他の駒で取れば詰む場合も無駄合）
+            for(int from=0;from<81&&!res;++from) {
+                if(q.sq[from]<=0)continue;
+                if(from!=a&&!ALLCAP)continue;
+                for(bool prom:{false,true}) {Move m{from,d.to,0,prom};if(!q.legal(m))continue;
+                    Board r=q;r.push(m);if(!r.check())continue;
+                    if(!wide){if(!has_evasion(r,0)){res=true;break;}}
+                    else {r.remove(0,d.drop);if(defenders(r,n)){res=true;break;}}
+                }
             }
         } catch(...) {if(wide){inprog.erase(k);--fdepth;}throw;}
         if(wide){inprog.erase(k);--fdepth;}
