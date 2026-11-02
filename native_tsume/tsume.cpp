@@ -348,7 +348,7 @@ struct Solver {
         bool res=false;
         try {
             Board q=b;q.push(d);
-            // 合駒は、王手をかけている駒（a）だけでなく、攻め方のどの駒で取ってもよい（他の駒で取れば詰む場合も無駄合）
+            // 合駒は、王手をかけている駒（a）だけでなく、攻め方のどの駒で取ってもよい（他の駒で取れば詰む場合も無駄合）　26/11/03
             for(int from=0;from<81&&!res;++from) {
                 if(q.sq[from]<=0)continue;
                 if(from!=a&&!ALLCAP)continue;
