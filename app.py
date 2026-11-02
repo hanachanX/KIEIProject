@@ -34,6 +34,10 @@ try:
     import tsume_verify                      # 無駄合を除いた検証（棋慧エンジン）
 except Exception:
     tsume_verify = None
+try:
+    import tsume_kh_repair                   # Komoringの手順の無駄合を、Komoringへの問い合わせで直す
+except Exception:
+    tsume_kh_repair = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -2235,6 +2239,11 @@ class MainWindow(QMainWindow):
         t0 = time.time()
         res, state = 0, "error"
         try:
+            try:                      # 攻方が王手されている局面（玉方の逆王手）は、Komoringが誤って不詰と答えるので聞かない
+                if shogi.Board(sfen).is_check():
+                    return 0
+            except Exception:
+                pass
             path = self._tsume_path()
             if not path:
                 return 0
@@ -2267,6 +2276,43 @@ class MainWindow(QMainWindow):
             c = self.kh_ask_by.setdefault(key, [0, 0.0])
             c[0] += 1
             c[1] += dt
+
+    def _kh_ask(self, sfen, ms=3000):
+        """「無駄合を直す」から呼ばれる：局面（攻方番）をKomoringHeightsに渡し、(状態, 手順) を返す。
+        状態: mate / nomate / timeout / error。検証専用のエンジン（_kh_oracleと同じもの）を使う。"""
+        path = self._tsume_path()
+        if not path:
+            return "error", []
+        tries = [sfen]
+        try:
+            alt = core.mate_king_candidates(sfen, 1)[0][0]
+            if alt != sfen:
+                tries.append(alt)
+        except Exception:
+            pass
+        last = ("error", [])
+        for s in tries:
+            for attempt in (0, 1):
+                try:
+                    with self.tsume_olock:
+                        eng = getattr(self, "tsume_oeng", None)
+                        if eng is None or eng.proc is None or eng.proc.poll() is not None:
+                            eng = core.UsiEngine(path, {"USI_Hash": 64})
+                            eng.start()
+                            self.tsume_oeng = eng
+                        state, pv, _n = eng.mate(s, ms)
+                    if state in ("mate", "nomate", "timeout"):
+                        return state, list(pv or [])
+                    last = (state, list(pv or []))
+                    break
+                except (OSError, RuntimeError, TimeoutError):
+                    try:
+                        self.tsume_oeng = None
+                    except Exception:
+                        pass
+                    if attempt == 1:
+                        break
+        return last
 
     def _tsume_log(self, sfen, state, n, sec):
         """どの局面で何秒かかったかを kento_tsume_log.txt に記録する（遅いときの原因調べ用）。"""
@@ -2967,6 +3013,23 @@ class MainWindow(QMainWindow):
             try:
                 if kind == "line":
                     res = tsume_verify.quick_check(sfen, list(pv), time_limit=120, fmt=core.move_ja)
+                    if res.get("state") == "warn" and tsume_kh_repair is not None and self._tsume_path():
+                        # 手順に無駄合が見つかった：Komoringに問い合わせて、無駄合を除いた最長の手順に直してみる
+                        try:
+                            rp = tsume_kh_repair.Repair(tsume_kh_repair.Asker(self._kh_ask), max_asks=600, time_limit=90)
+                            rr = rp.run(sfen)
+                            if rr.get("state") == "mate" and rr.get("line"):
+                                res["repair"] = {
+                                    "n": rr["n"], "line": list(rr["line"]), "changed": bool(rr.get("changed")),
+                                    "asks": rr["asks"], "sec": rr["sec"], "ask_sec": rp.ask.sec,
+                                    "by": {k: list(v) for k, v in rp.ask.by_state.items()},
+                                    "incomplete": list(rr.get("incomplete", [])),
+                                    "check": tsume_kh_repair.check(sfen, rr["line"]),
+                                }
+                            else:
+                                res["repair_msg"] = "Komoringへの問い合わせでは、手順を直せませんでした。"
+                        except Exception as e:
+                            res["repair_msg"] = f"手順を直す途中で止まりました：{e}"
                 else:
                     # まず棋慧だけで解く（短い問題はこれが最速）。30秒で終わらなければKomoringの助けを借りる
                     res = tsume_verify.detail(sfen, list(pv), time_limit=30, fmt=core.move_ja)
@@ -3025,7 +3088,40 @@ class MainWindow(QMainWindow):
                 h.append(f"<p>無駄合： {esc(' '.join(r['futile']))}</p>")
                 if r.get("pending"):
                     h.append(f"<p>※次の合駒は時間内に判定できませんでした： {esc(' '.join(r['pending']))}</p>")
-                h.append("<p>正しい手順や手数は「詳細検討」で調べられます（時間がかかることがあります）。</p>")
+                rep = r.get("repair")
+                if rep:
+                    try:
+                        rline = tsume_verify.line_ja(r["sfen"], rep["line"])
+                    except Exception:
+                        rline = " ".join(rep["line"])
+                    chk = rep.get("check", {})
+                    good = bool(chk.get("legal") and chk.get("mate") and chk.get("shorter") is False and not chk.get("extra_piece"))
+                    h.append(f"<p><b>無駄合を除いて直した手順（{rep['n']}手）</b>：<br>{esc(rline)}</p>")
+                    if good:
+                        h.append("<p>この手順は詰んでいて、これより短く詰む筋はなく、駒余りもありません。"
+                                 "余詰・変化の確認は「詳細検討」で調べられます。「検証済み手順を盤へ」で取り込めます。</p>")
+                        self.verified_game = None
+                        self.verified_pv = list(rep["line"])
+                        self.btn_mate_apply_v.setEnabled(True)
+                    else:
+                        notes = []
+                        if chk.get("shorter"):
+                            notes.append("これより短く詰む筋があります")
+                        if chk.get("extra_piece"):
+                            notes.append("駒が余っています")
+                        if not chk.get("mate"):
+                            notes.append("詰んでいません")
+                        h.append(f"<p><span style='color:#d32f2f'>※直した手順は、このままでは正しいと言えません（{esc('、'.join(notes) or '確認できませんでした')}）。"
+                                 "「詳細検討」で確かめてください。</span></p>")
+                    if rep.get("incomplete"):
+                        h.append("<p>※確かめきれなかった場面があります（問い合わせの時間切れなど）。</p>")
+                    names = {"mate": "詰み", "nomate": "不詰", "other": "時間切れ等"}
+                    det = "、".join(f"{names.get(k, k)} {v[0]}回" for k, v in rep.get("by", {}).items())
+                    h.append(f"<p>（Komoringへの問い合わせ：{rep['asks']}回・合計{rep['ask_sec']:.1f}秒　内訳：{esc(det)}）</p>")
+                else:
+                    if r.get("repair_msg"):
+                        h.append(f"<p>{esc(r['repair_msg'])}</p>")
+                    h.append("<p>正しい手順や手数は「詳細検討」で調べられます（時間がかかることがあります）。</p>")
             else:
                 h.append("<p>KomoringHeightsの手順に、無駄合は見つかりませんでした。</p>")
                 h.append("<p>※この手順1本の合駒だけを調べています。他の変化や余詰は「詳細検討」で調べられます。</p>")
@@ -3060,7 +3156,7 @@ class MainWindow(QMainWindow):
             det = "、".join(f"{names[k]} {v[0]}回・{v[1]:.1f}秒" for k, v in by.items() if k in names)
             h.append(f"<p>（うち、Komoringへの問い合わせ：{r.get('kh_asks', 0)}回・合計{r.get('kh_sec', 0.0):.1f}秒"
                      + (f"　内訳：{det}" if det else "") + "）</p>")
-        else:
+        elif not r.get("repair"):
             h.append("<p>（棋慧エンジン単独で検証しました）</p>")
         if kind == "alt" and st in ("ok", "warn") and r.get("game") and r["game"].get("moves"):
             self.verified_game = r["game"]

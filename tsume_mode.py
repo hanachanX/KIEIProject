@@ -495,6 +495,23 @@ def solve_line(sfen, steps):
         return None
 
 
+# ====================================================================== 手順前後の見分け
+def reorder_of(line, k, u, tot, n):
+    """余詰（k手目に作意以外の手 u で、全 tot 手で詰む）が、「手順前後」かを調べる。
+    手順前後 = その手が、作意の手順の、あとの攻方の手と同じで、手数も作意と同じ。
+    （作意のあとのほうの手を先に指しても詰む、という意味）。
+    戻り値は、作意の何手目と同じ手か（1始まり）。手順前後でなければ None。"""
+    try:
+        if tot != n:
+            return None
+        for j in range(k + 1, len(line), 2):          # k は1始まりの手番、line[k-1] が作意の k 手目。あとの攻方の手は line[k+1], line[k+3] ...
+            if line[j] == u:
+                return j + 1
+    except Exception:
+        pass
+    return None
+
+
 # ====================================================================== 余詰の結果
 class AltResultDialog(QDialog):
     """余詰検査の結果。文章はコピーでき、時間切れの王手は長い時間で調べ直せ、手順は変化つきのKIFで保存・コピーできる。"""
@@ -591,6 +608,9 @@ class AltResultDialog(QDialog):
             except Exception:
                 name, pv = u, ""
             if vv == "mate":
+                j = reorder_of(self.line, k, u, tot, n)
+                if j:
+                    name += f"（手順前後：作意の{j}手目と同じ手を先に指す順）"
                 found.append((k, name, tot, pv, ln, bsfen))
             else:
                 unsure.append((k, name))
@@ -601,6 +621,9 @@ class AltResultDialog(QDialog):
         t = []
         if found:
             t.append(f"【余詰あり】作意（{n}手）以外の手順でも詰みます（{len(found)}か所）。作品として不完全です。")
+            nr = sum(1 for f in found if "手順前後" in f[1])
+            if nr:
+                t.append(f"※うち{nr}か所は「手順前後」です（作意のあとの手を先に指しても、同じ手数で詰みます）。残りは別の手による余詰です。")
             t.append("※手数と手順は詰将棋エンジンのもので、無駄合を応手に数えるため、柿木将棋と手数が違うことがあります。")
             t.append("")
             for k, name, tot, pv, ln, _b in found:
