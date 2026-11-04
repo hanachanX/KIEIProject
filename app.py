@@ -1416,10 +1416,10 @@ class MainWindow(QMainWindow):
             hb.setMinimumHeight(30)
             hb.setCursor(Qt.CursorShape.PointingHandCursor)
             hb.setStyleSheet(
-                "QPushButton { background:#3a2e22; color:#f3e3bd; border:1px solid #b8892f;"
+                "QPushButton { background:#f3e3bd; color:#2b2118; border:1px solid #b8892f;"
                 " border-radius:4px; padding:4px 14px; font-size:13px; }"
-                "QPushButton:hover { background:#4d3c2a; }"
-                "QPushButton:pressed { background:#b8892f; color:#2b2118; }"
+                "QPushButton:hover { background:#ead3a1; }"
+                "QPushButton:pressed { background:#d5b575; color:#2b2118; }"
                 "QPushButton::menu-indicator { subcontrol-position:right center; right:4px; }")
             hl.addWidget(hb, 0, Qt.AlignmentFlag.AlignVCenter)
         wrap = _W()
