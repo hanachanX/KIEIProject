@@ -80,6 +80,16 @@ def _moves(text):
     return [shogi.Move.from_usi(m) for m in text.split()]
 
 
+def set_floor(k):
+    """無駄合の判定に使う手数の下限を設ける（0で解除）。浅い探索でも無駄合を見抜けるようにする、短い手数の再確認用。
+    古いDLLには無い機能なので、使えないときは False を返し、そのまま従来どおり動く。"""
+    try:
+        _run("futile_floor", n=int(k))
+        return True
+    except ValueError:
+        return False
+
+
 def clear_cache():
     """Clear caches belonging to the calling thread."""
     _run("clear")

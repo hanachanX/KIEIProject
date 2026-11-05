@@ -308,6 +308,7 @@ struct Solver {
     std::unordered_map<uint64_t,int> ost;
     long long o_calls=0,o_pruned=0;
     int oracle_min=5;
+    int futile_floor=0;   // 無駄合の判定に使う手数の下限（0=使わない）。浅い探索でも無駄合を見抜くための、短い手数の再確認用
     bool final_alt=false; // allow several last moves (any square) when true
     std::string error;
     std::string last_output;
@@ -333,7 +334,7 @@ struct Solver {
         tick();std::vector<Move> out;int k=b.king(1);
         for(int p:b.order[0])if(b.hand[0][p]>0)for(int s=0;s<81;++s)
             if(!b.sq[s]&&b.attacks(p,k,s,1)) {Move m{-1,s,p,false};if(b.legal(m))out.push_back(m);}
-        for(auto m:b.board_moves(0))if(b.pseudo(m)){if(b.gives_check(m))out.push_back(m);}
+        for(auto m:b.board_moves(0))if(b.legal(m)){if(b.gives_check(m))out.push_back(m);}   // 攻め方に玉がある（双玉）とき、自玉に王手がかかる手は指せない
         return out;
     }
     std::unordered_set<uint64_t> inprog;
@@ -341,6 +342,7 @@ struct Solver {
     // Futile interposition: after the slider captures the dropped piece, remove that piece from the attacker's hand;
     // if mate is still reached within n plies, the drop is futile (n=0: only when no evasion remains).
     bool futile(const Board& b,const Move& d,int a,int n=0) {
+        if(n>=1&&n<futile_floor)n=futile_floor;
         auto k=key(b,n)*0x9E3779B97F4A7C15ULL+uint64_t(d.to+1)*131+uint64_t(d.drop)*17+(d.from<0?7:uint64_t(d.from)*257)+(d.promotion?3:0);k^=k>>31;auto it=cf.find(k);if(it!=cf.end())return it->second;
         if(inprog.count(k))return false;
         bool wide=n>=1&&fdepth<maxDepth;
@@ -627,6 +629,7 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
         return s.forward(Pos::from(Board::parse(q)),parse_move(m),Pos::from(Board::parse(p)),color)?"1":"0";
     }
     if(op=="oracle_min"){s.oracle_min=n<3?3:n;return "";}
+    if(op=="futile_floor"){s.futile_floor=n<0?0:n;s.clear();return "";}
     if(op=="final_alt"){s.final_alt=n!=0;return "";}
     if(op=="oracle_stats")return std::to_string(s.o_calls)+" "+std::to_string(s.o_pruned);
     Board b=Board::parse(text);

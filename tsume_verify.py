@@ -154,7 +154,12 @@ def verify_markdown(sfen, pv, time_limit=60, max_lines=160, fmt=None):
             if T.defenders_all_lose(q, N - 3):
                 N -= 2
             else:
-                break
+                r = _floor_try(lambda: T.defenders_all_lose(q, N - 3), secs=min(3.0, max(1.0, deadline - _time.time())), keep=True)
+                if r and _floor_try(lambda: _line_ok(q, N - 3), secs=3.0, keep=True):
+                    N -= 2                             # 浅い判定では無駄合を見落としていた：もっと短い手数で詰む
+                else:
+                    T.set_floor(0)
+                    break
     else:
         for n in range(L + 2, L + 7, 2):
             if T.defenders_all_lose(q, n - 1):
@@ -193,6 +198,71 @@ def verify_markdown(sfen, pv, time_limit=60, max_lines=160, fmt=None):
     return "\n".join(head + body) + ("\n\n" + note if note else "") + "\n"
 
 
+def _line_ok(q, n):
+    """q: 玉方の手番の局面、n: 残り手数(玉方の手を含む)。最長の受けを選びながら最後まで手順を作り、本当に詰みで終わるかを確かめる。
+    無駄合の判定を深くしたとき、無駄合でない合駒まで無駄合にしてしまい、短すぎる手数が出る誤りを見つけるための検算。"""
+    b = _clone(q)
+    steps = 0
+    while n > 0 and steps < 80:
+        steps += 1
+        rep = replies(b, n)
+        valid = [r for r in rep if r[1] != '無駄合' and r[2] is not None]
+        if not valid:
+            break
+        mx = max(r[2] for r in valid)
+        pick = sorted([r for r in valid if r[2] == mx], key=lambda r: r[1] == '合駒')[0]
+        b.push_usi(pick[0])
+        n = pick[2]
+        if n <= 0:
+            break
+        wins = attacker_wins(b, n)
+        if not wins:
+            return False
+        b.push_usi(wins[0])
+        n -= 1
+    return bool(b.is_checkmate())
+
+
+def _floor_try(fn, secs=20.0, keep=False):
+    """無駄合の判定に下限を設けて fn() を試す。True/False を返し、時間切れや古いDLLのときは None。
+    浅い探索では無駄合を見抜けず「詰まない」と誤判定することがあるため、短い手数だけを再確認するのに使う。"""
+    old = T.TIMEOUT
+    res_ok = [False]
+    if not T.set_floor(6):
+        return None
+    try:
+        T.TIMEOUT = max(1.0, secs)
+        try:
+            r = bool(fn())
+            res_ok[0] = r
+            return r
+        except ValueError as e:
+            if "timeout" in str(e):
+                return None
+            raise
+    finally:
+        T.TIMEOUT = old
+        if not (keep and res_ok[0]):
+            T.set_floor(0)
+
+
+def _shorter(q, m, deadline):
+    """玉方の手 m 手で詰むと分かったとき、もっと短い手数(2,4,..,m-2)で詰まないかを、無駄合の判定を深くして確かめ直す。
+    詰むと分かるのは確実だが、「詰まない」の判定は浅い探索では無駄合を見落として誤ることがあるため。"""
+    for k in range(2, m, 2):
+        if _time.time() > deadline:
+            break
+        r = _floor_try(lambda: T.defenders_all_lose(q, k), secs=min(3.0, max(1.0, deadline - _time.time())), keep=True)
+        if r is None:
+            break
+        if r:
+            if _floor_try(lambda: _line_ok(q, k), secs=3.0, keep=True):
+                return k
+            T.set_floor(0)                       # 検算に通らない：深い判定のやり過ぎなので、元の手数のままにする
+            return m
+    return m
+
+
 def _exact_length(q, L, deadline):
     """q: 初手を指した後の局面。L: KHの手数。無駄合を除いた詰み手数を返す(分からなければ None)。"""
     # 短い手数から順に調べる（正しい手数がKHの手順より短いとき、長い探索をしなくて済む）
@@ -200,12 +270,12 @@ def _exact_length(q, L, deadline):
         if _time.time() > deadline:
             return None
         if T.defenders_all_lose(q, m):
-            return m + 1
+            return _shorter(q, m, deadline) + 1
     if T.defenders_all_lose(q, L - 1):
-        return L
+        return _shorter(q, L - 1, deadline) + 1
     for n in range(L + 2, L + 7, 2):
         if T.defenders_all_lose(q, n - 1):
-            return n
+            return _shorter(q, n - 1, deadline) + 1
     return None
 
 
@@ -656,7 +726,26 @@ def solve_first(sfen, time_limit=150, max_n=31):
             T.TIMEOUT = max(1.0, left)
             try:
                 if T.can_mate(b, n):
-                    N = n; break
+                    N = n
+                    for k in range(1, n, 2):          # もっと短い手数で詰まないか、無駄合の判定を深くして確かめ直す
+                        if _time.time() > deadline:
+                            break
+                        r = _floor_try(lambda: T.can_mate(b, k), secs=min(3.0, max(1.0, deadline - _time.time())), keep=True)
+                        if r is None:
+                            break
+                        if r:
+                            wl = []
+                            w = _floor_try(lambda: wl.extend(attacker_wins(b, k)) or bool(wl), secs=3.0, keep=True)
+                            ok = False
+                            if w:
+                                q2 = _clone(b); q2.push_usi(wl[0])
+                                ok = _floor_try(lambda: _line_ok(q2, k - 1), secs=3.0, keep=True) if k > 1 else True
+                            if ok:
+                                N = k
+                            else:
+                                T.set_floor(0)       # 検算に通らない：元の手数のままにする
+                            break
+                    break
             except ValueError as e:
                 if "timeout" not in str(e):
                     raise
@@ -684,3 +773,20 @@ def solve_first(sfen, time_limit=150, max_n=31):
         T.TIMEOUT = old
         res["sec"] = _time.time() - t0
 
+
+def _scoped(fn):
+    """下限つきの判定を使った場合に、関数を抜けたら必ず解除する（次の検証に持ち越さない）。"""
+    import functools
+
+    @functools.wraps(fn)
+    def w(*a, **k):
+        T.set_floor(0)
+        try:
+            return fn(*a, **k)
+        finally:
+            T.set_floor(0)
+    return w
+
+
+for _n in ("verify_markdown", "quick_markdown", "check_line", "detail", "quick_check", "solve_first"):
+    globals()[_n] = _scoped(globals()[_n])
