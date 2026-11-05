@@ -126,6 +126,8 @@ def tree(sfen, first_moves, total, out=print, fmt=None):
 
 
 import time as _time
+import threading as _threading
+CANCEL = _threading.Event()      # 立てると、solve_first が次の手数の段階に進む前に止まる（アプリの「中断」ボタン用）
 
 
 class _Timeout(Exception):
@@ -642,6 +644,9 @@ def solve_first(sfen, time_limit=150, max_n=31):
         N = None
         n = 1
         while n <= max_n:
+            if CANCEL.is_set():
+                res["state"] = "skip"; res["msg"] = f"中断しました（{res['upto']}手までは詰まないことを確認しました）。"
+                return res
             left = deadline - _time.time()
             if left <= 0:
                 res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
