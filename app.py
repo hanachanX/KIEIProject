@@ -1114,7 +1114,21 @@ class MainWindow(QMainWindow):
         self.tsume_banner = QLabel("")
         self.tsume_banner.setStyleSheet("background:#d9480f; color:white; font-weight:bold; font-size:15px; padding:6px 10px; border-radius:4px;")
         self.tsume_banner.hide()
-        lv.addWidget(self.tsume_banner)
+        bn_row = QHBoxLayout()
+        bn_row.setContentsMargins(0, 0, 0, 0)
+        bn_row.addWidget(self.tsume_banner, 1)
+        self.tsume_exit_btn = QPushButton("終了")
+        self.tsume_exit_btn.setToolTip("詰将棋モードを終えて、ふつうの検討に戻ります")
+        self.tsume_exit_btn.setStyleSheet("background:#d9480f; color:white; font-weight:bold; padding:6px 12px;")
+        self.tsume_exit_btn.clicked.connect(self.tsume_exit)
+        self.tsume_exit_btn.hide()
+        bn_row.addWidget(self.tsume_exit_btn)
+        lv.addLayout(bn_row)
+        self.tsume_memo = QTextBrowser()               # 問題のメモ（棋譜コメントとは別の枠）
+        self.tsume_memo.setMaximumHeight(84)
+        self.tsume_memo.setStyleSheet("background:#e8f1fb; color:#1c3553; border:1px solid #9bb9d8; border-radius:4px;")
+        self.tsume_memo.hide()
+        lv.addWidget(self.tsume_memo)
         lv.addWidget(self.boardw, 1)
         self.graph = EvalGraph()
         self.graph.plotClicked.connect(self.go_to_ply)
@@ -1450,6 +1464,15 @@ class MainWindow(QMainWindow):
                 self.tsume_banner.setText(f"◆ 詰将棋モード　{p.get('title', '')}　{p['steps']}手詰　先手（攻方）の王手の連続で詰ませてください")
                 self.tsume_banner.show()
                 self.graph.hide()                     # 詰将棋では評価値グラフを出さない
+                self.tsume_exit_btn.show()
+                memo = (p.get('memo') or '').strip()
+                if memo:
+                    if self.tsume_memo.property('src') != memo:
+                        self.tsume_memo.setPlainText('メモ：' + memo)
+                        self.tsume_memo.setProperty('src', memo)
+                    self.tsume_memo.show()
+                else:
+                    self.tsume_memo.hide()
                 self.btn_tsume.setStyleSheet("background:#d9480f; color:white; font-weight:bold;")
             else:
                 shown = getattr(self, "tsume_shown", None)
@@ -1461,6 +1484,8 @@ class MainWindow(QMainWindow):
                 else:
                     self.tsume_banner.hide()
                     self.graph.setVisible(not self._on_hidden_graph_tab())
+                self.tsume_exit_btn.hide()
+                self.tsume_memo.hide()
                 self.btn_tsume.setStyleSheet("")
         except Exception:
             pass
@@ -3927,6 +3952,7 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
         try:
+            self._closing_all = True            # アプリ終了のときは、詰将棋の確認を出さない
             if getattr(self, "tsume_dlg", None):
                 self.tsume_dlg.close()          # 詰将棋の一覧ウインドウも一緒に閉じる
         except Exception:

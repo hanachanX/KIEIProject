@@ -834,6 +834,27 @@ class TsumeDialog(QDialog):
         self.refresh_label()
         self.apply_filter()
 
+
+    def closeEvent(self, e):
+        """一覧を閉じても、ふつうは解きかけの詰将棋モードを続ける。
+        ただし手を指したあとなら、モードも終えるかを聞く（はい＝終えて閉じる／いいえ＝一覧だけ閉じる／キャンセル＝閉じない）。"""
+        try:
+            w = self.win
+            if getattr(w, "tsume", None) and getattr(w, "moves", None) and not getattr(w, "_closing_all", False):
+                from PyQt6.QtWidgets import QMessageBox
+                B = QMessageBox.StandardButton
+                r = QMessageBox.question(self, "詰将棋", "解いている途中です。詰将棋モードも終えますか？\n\n"
+                                         "はい：モードを終えて閉じる／いいえ：一覧だけ閉じて続ける",
+                                         B.Yes | B.No | B.Cancel, B.No)
+                if r == B.Cancel:
+                    e.ignore()
+                    return
+                if r == B.Yes:
+                    w.tsume_exit()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
     def check_alt(self):
         import threading
         import tsume_jissen
