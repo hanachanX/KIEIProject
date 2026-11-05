@@ -825,7 +825,7 @@ class TsumeDialog(QDialog):
                          ("次の問題", self.start_next), ("ヒント", lambda: self.win.tsume_hint()),
                          ("答えを見る", lambda: self.win.tsume_answer()),
                          ("初形に戻す", lambda: self.win.tsume_reset()),
-                         ("詰将棋モードを終える", lambda: self.win.tsume_exit())]:
+                         ("詰将棋モードを終える", self.exit_and_close)]:
             b = QPushButton(text)
             b.clicked.connect(fn)
             bl.addWidget(b)
@@ -834,6 +834,13 @@ class TsumeDialog(QDialog):
         self.refresh_label()
         self.apply_filter()
 
+
+    def exit_and_close(self):
+        """モードを終えて、この一覧も閉じる（終えたあとなので、閉じるときの確認は出ない）。"""
+        try:
+            self.win.tsume_exit()
+        finally:
+            self.close()
 
     def closeEvent(self, e):
         """一覧を閉じても、ふつうは解きかけの詰将棋モードを続ける。
