@@ -2838,8 +2838,16 @@ class MainWindow(QMainWindow):
         if tsume_verify is None:
             QMessageBox.warning(self, "解けません", "検証用の部品(tsume_verify)が読み込めていません。")
             return
+        if getattr(self, "_kiei_running", False):          # 解いている最中にもう一度押すと、中断する
+            tsume_verify.CANCEL.set()
+            self.btn_kiei.setEnabled(False)
+            self.btn_kiei.setText("中断しています…")
+            self.status.setText("中断しています…（いま読んでいる手数の段階が終わると止まります）")
+            return
         sfen = self.cur_board.sfen()
-        self.btn_kiei.setEnabled(False)
+        tsume_verify.CANCEL.clear()
+        self._kiei_running = True
+        self.btn_kiei.setText("中断")
         self.mate_by_kiei = False
         self.btn_mate_apply.setEnabled(False)
         self.btn_mate_check.setEnabled(False)
@@ -2858,6 +2866,9 @@ class MainWindow(QMainWindow):
                 if sv["state"] != "ok":
                     res = {"state": "timeout" if sv["state"] == "timeout" else ("skip" if sv["state"] in ("skip", "nomate") else "error"),
                            "msg": sv["msg"], "sec": 0.0}
+                    pv = []
+                elif tsume_verify.CANCEL.is_set():
+                    res = {"state": "skip", "msg": "中断しました。", "sec": 0.0}
                     pv = []
                 else:
                     pv = list(sv["pv"])
@@ -3085,6 +3096,9 @@ class MainWindow(QMainWindow):
         import html as _h
         esc = lambda t: _h.escape(str(t))
         self.btn_kiei.setEnabled(True)
+        self.btn_kiei.setText("棋慧で解く")
+        self._kiei_running = False
+        tsume_verify.CANCEL.clear()
         same = bool(self.last_mate and self.last_mate[0] == r.get("sfen"))
         if same:
             self.btn_mate_check.setEnabled(tsume_verify is not None)
