@@ -342,6 +342,12 @@ struct Solver {
     }
     std::unordered_set<uint64_t> inprog;
     int fdepth=0,maxDepth=6;
+    // ■無駄合の定義について（この判定は定義の選び方で結果が変わる。詳しくは https://w.atwiki.jp/mudaai/pages/29.html ）
+    //  ・棋慧の定義：合駒（打つ合駒・盤上の駒を動かす移動合の両方）を攻め方のどの駒で取ってもよく、
+    //    取った合駒は攻め方の持駒として使えないものとして、残りの手数以内に詰むなら無駄合とする。
+    //  ・そのため、取った合駒を使わないと詰まない局面では「無駄合ではない」と判定する（手数が長くなることがある）。
+    //    例: 7pn/6p2/6B1k/6+B1p/9/6L2/9/9/9 b P2r4g4s3n3l14p 1 の３五香打（取った香で詰ます変化があるため無駄合としない）。
+    //  ・取った駒を使ってよいとする流儀とは結果が食い違うことがある。これは不具合ではなく定義の違い。
     // Futile interposition: after the slider captures the dropped piece, remove that piece from the attacker's hand;
     // if mate is still reached within n plies, the drop is futile (n=0: only when no evasion remains).
     bool futile(const Board& b,const Move& d,int a,int n=0) {
