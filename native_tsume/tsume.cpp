@@ -333,7 +333,10 @@ struct Solver {
     std::vector<Move> checks(const Board& b) {
         tick();std::vector<Move> out;int k=b.king(1);
         for(int p:b.order[0])if(b.hand[0][p]>0)for(int s=0;s<81;++s)
-            if(!b.sq[s]&&b.attacks(p,k,s,1)) {Move m{-1,s,p,false};if(b.legal(m))out.push_back(m);}
+            if(!b.sq[s]&&b.attacks(p,k,s,1)) {Move m{-1,s,p,false};if(!b.legal(m))continue;
+                // 打ち歩詰めは反則。玉との間でピンされて歩を取れない駒しか無い場合も、取れないので詰み＝反則（python-shogiの判定はここが甘い）
+                if(p==P){Board q=b;q.push(m);if(!has_evasion(q,0))continue;}
+                out.push_back(m);}
         for(auto m:b.board_moves(0))if(b.legal(m)){if(b.gives_check(m))out.push_back(m);}   // 攻め方に玉がある（双玉）とき、自玉に王手がかかる手は指せない
         return out;
     }
