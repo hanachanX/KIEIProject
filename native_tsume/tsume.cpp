@@ -219,13 +219,28 @@ struct Board {
         if(m.from<0)self->sq[m.to]=sign(mover)*m.drop;
         else {int pt=std::abs(sq[m.from]);self->sq[m.to]=sign(mover)*(m.promotion?promoted[pt]:pt);self->sq[m.from]=0;}
         if(attacked(opp,king(mover)))return false;
-        // Match python-shogi's pawn-drop-mate test, including its documented limitation.
+        // 打ち歩詰め（歩を打って詰ますのは反則）。玉が逃げられず、歩を取れる駒（動けないピンされた駒は取れない）も無ければ反則。
         if(m.drop!=P)return true;
         int k=king(opp);
         if(k<0||!attacks(P,m.to,k,mover))return true;
-        for(int s=0;s<81;++s)if(attacks(K,k,s,opp)&&(!sq[s]||color_of(sq[s])!=opp))
-            if(!attacked(mover,s))return true;
-        return attacked(opp,m.to,true);
+        {   // 玉が動いて逃げられるか（玉自身が元の升から動くので、玉の裏側の利きも考える）
+            int kv=sq[k];self->sq[k]=0;
+            bool esc=false;
+            for(int s=0;s<81&&!esc;++s)if(attacks(K,k,s,opp)&&(!sq[s]||color_of(sq[s])!=opp))
+                if(!attacked(mover,s))esc=true;
+            self->sq[k]=kv;
+            if(esc)return true;
+        }
+        // 玉以外の駒が歩を取れるか（取ったあとに自玉が王手になる動き＝ピンされた駒は取れない）
+        for(int s=0;s<81;++s) {
+            if(!sq[s]||color_of(sq[s])!=opp||std::abs(sq[s])==K)continue;
+            if(!attacks(std::abs(sq[s]),s,m.to,opp))continue;
+            int pv=sq[s],tv=sq[m.to];self->sq[s]=0;self->sq[m.to]=pv;
+            bool bad=attacked(mover,king(opp));
+            self->sq[s]=pv;self->sq[m.to]=tv;
+            if(!bad)return true;
+        }
+        return false;
     }
     // True if the move gives check to the opponent king (no Board copy).
     bool gives_check(const Move& m) const {
