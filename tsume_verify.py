@@ -516,7 +516,8 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
                         vlist.append(vitem)
                         walk(qb, alt[2], False, toks, nts, sub_path, len(vlist) - 1)
                         vitem["moves"] = sub_path[len(path):]
-                        blocks.append((f"{prev} のあと {label} の変化", " ".join(toks).replace("（非限定） ", "（非限定）") + "　まで", nts))
+                        _end = "　まで駒余り" if not hand_empty(qb) else "　まで"      # 詰んだとき、攻め方の持駒が残っていれば「駒余り」
+                        blocks.append((f"{prev} のあと {label} の変化", " ".join(toks).replace("（非限定） ", "（非限定）") + _end, nts))
                     tok = _jp(fmt, b, first[0])
                     if first[1] == '合駒' and len(drops) > 1:
                         tok = _gou(tok)             # 打てる合駒なら何でもよい
@@ -548,7 +549,8 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
                 raise
             res["state"] = "timeout"; res["msg"] = "時間切れのため、ここまでの結果です。"
         fix = lambda ts: " ".join(ts).replace("（非限定） ", "（非限定）")
-        res["blocks"] = [("手順", fix(toks) + f"　まで{N}手", nts)] + blocks
+        _mend = f"　まで{N}手" + ("（駒余り）" if not hand_empty(b) else "")
+        res["blocks"] = [("手順", fix(toks) + _mend, nts)] + blocks
         # 棋慧の「変化（分岐棋譜）」として盤に取り込める形
         for v in vlist:
             try:
