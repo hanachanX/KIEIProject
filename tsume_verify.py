@@ -19,13 +19,32 @@ def is_futile(b, drop_usi, n):
     text = b.sfen() + "\n" + drop_usi
     return T._run("futile", text=text, n=conv(a), budget=n) == "1"
 
+def _is_interp_move(b, m):
+    """盤上の駒を動かして、王手している遠隔駒と玉の間に入る手（移動合）かどうか。"""
+    if m.from_square is None:
+        return False
+    pc = b.piece_at(m.from_square)
+    if pc is None or pc.piece_type == shogi.KING:
+        return False
+    ksq = b.king_squares[b.turn]
+    att = list(b.attackers(1 - b.turn, ksq))
+    if len(att) != 1:
+        return False
+    a = att[0]
+    dr, df = a // 9 - ksq // 9, a % 9 - ksq % 9
+    dist = max(abs(dr), abs(df))
+    if dist <= 1 or not (dr == 0 or df == 0 or abs(dr) == abs(df)):
+        return False
+    sr, sf = (dr > 0) - (dr < 0), (df > 0) - (df < 0)
+    return any((ksq // 9 + sr * i) * 9 + ksq % 9 + sf * i == m.to_square for i in range(1, dist))
+
 def replies(b, n):
     """b: 玉方手番の局面。各応手について (usi, 種別, 残り手数) を返す。種別: '玉移動など'/'合駒'/'無駄合'"""
     res = []
     for m in b.legal_moves:
         u = m.usi()
         q = shogi.Board(b.sfen()); q.push(m)
-        if m.from_square is None or u[1] == '*':
+        if m.from_square is None or u[1] == '*' or _is_interp_move(b, m):
             if is_futile(b, u, n):
                 res.append((u, '無駄合', None)); continue
             kind = '合駒'

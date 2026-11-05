@@ -348,6 +348,7 @@ struct Solver {
         if(n>=1&&n<futile_floor)n=futile_floor;
         auto k=key(b,n)*0x9E3779B97F4A7C15ULL+uint64_t(d.to+1)*131+uint64_t(d.drop)*17+(d.from<0?7:uint64_t(d.from)*257)+(d.promotion?3:0);k^=k>>31;auto it=cf.find(k);if(it!=cf.end())return it->second;
         if(inprog.count(k))return false;
+        const int rem=d.from<0?d.drop:base(std::abs(b.sq[d.from]));   // 合駒になった駒の種類（移動合も同じ扱い）
         bool wide=n>=1&&fdepth<maxDepth;
         if(wide){inprog.insert(k);++fdepth;}
         bool res=false;
@@ -360,12 +361,29 @@ struct Solver {
                 for(bool prom:{false,true}) {Move m{from,d.to,0,prom};if(!q.legal(m))continue;
                     Board r=q;r.push(m);if(!r.check())continue;
                     if(!wide){if(!has_evasion(r,0)){res=true;break;}}
-                    else {r.remove(0,d.drop);if(defenders(r,n)){res=true;break;}}
+                    else {r.remove(0,rem);if(defenders(r,n)){res=true;break;}}
                 }
             }
         } catch(...) {if(wide){inprog.erase(k);--fdepth;}throw;}
         if(wide){inprog.erase(k);--fdepth;}
         cf[k]=res;return res;
+    }
+    // 王手が離れた駒1枚だけ、かつ間に升があるとき、その間の升を返す（移動合・打つ合駒の候補の升）
+    static bool is_interp_move(const Board& b,const Move& m,const std::vector<int>& sqs) {
+        if(m.from<0||std::abs(b.sq[m.from])==K)return false;
+        for(int q:sqs)if(q==m.to)return true;
+        return false;
+    }
+    // 王手が遠隔駒1枚だけで間に升があるとき、王手駒の位置 a と間の升を返す
+    static bool interp_squares(const Board& b,int& a,std::vector<int>& sqs) {
+        int k=b.king(1),count=0;a=-1;
+        for(int s=0;s<81;++s)if(b.sq[s]>0&&b.attacks(b.sq[s],s,k,0)){a=s;++count;}
+        if(count!=1)return false;
+        int pt=std::abs(b.sq[a]),dr=a/9-k/9,df=a%9-k%9,dist=std::max(std::abs(dr),std::abs(df));
+        if(!(pt==L||pt==B||pt==R||pt==13||pt==14)||dist<=1||!(dr==0||df==0||std::abs(dr)==std::abs(df)))return false;
+        int sr=(dr>0)-(dr<0),sf=(df>0)-(df<0);
+        for(int i=1;i<dist;++i)sqs.push_back((k/9+sr*i)*9+k%9+sf*i);
+        return true;
     }
     std::vector<Move> evasions(const Board& b,int bud=0) {
         tick();std::vector<Move> out;
@@ -377,12 +395,17 @@ struct Solver {
         int pt=std::abs(b.sq[a]),dr=a/9-k/9,df=a%9-k%9,dist=std::max(std::abs(dr),std::abs(df));
         if(!(pt==L||pt==B||pt==R||pt==13||pt==14)||dist<=1||!(dr==0||df==0||std::abs(dr)==std::abs(df)))return out;
         int sr=(dr>0)-(dr<0),sf=(df>0)-(df<0);
+        std::vector<int> sqs;
         for(int i=1;i<dist;++i) {
-            int s=(k/9+sr*i)*9+k%9+sf*i;
+            int s=(k/9+sr*i)*9+k%9+sf*i;sqs.push_back(s);
             for(int p:b.order[1])if(b.hand[1][p]>0) {
                 Move m{-1,s,p,false};if(b.legal(m)&&!futile(b,m,a,bud))out.push_back(m);
             }
         }
+        // 盤上の駒を動かす合駒（移動合）も、打つ合駒と同じく無駄合なら受けにならない
+        std::vector<Move> kept;
+        for(auto& m:out)if(!(is_interp_move(b,m,sqs)&&futile(b,m,a,bud)))kept.push_back(m);
+        out.swap(kept);
         return out;
     }
     // Like evasions() but returns interposition drops without testing futility (caller tests lazily).
@@ -396,6 +419,13 @@ struct Solver {
         int pt=std::abs(b.sq[a]),dr=a/9-k/9,df=a%9-k%9,dist=std::max(std::abs(dr),std::abs(df));
         if(!(pt==L||pt==B||pt==R||pt==13||pt==14)||dist<=1||!(dr==0||df==0||std::abs(dr)==std::abs(df)))return;
         int sr=(dr>0)-(dr<0),sf=(df>0)-(df<0);
+        std::vector<int> sqs;
+        for(int i=1;i<dist;++i)sqs.push_back((k/9+sr*i)*9+k%9+sf*i);
+        {   // 移動合は「打つ合駒」と同じ扱い（無駄合かどうかを後で調べる）
+            std::vector<Move> keep;
+            for(auto& m:normal){if(is_interp_move(b,m,sqs))drops.push_back(m);else keep.push_back(m);}
+            normal.swap(keep);
+        }
         for(int i=1;i<dist;++i) {
             int s=(k/9+sr*i)*9+k%9+sf*i;
             for(int p:b.order[1])if(b.hand[1][p]>0) {
@@ -479,6 +509,7 @@ struct Solver {
             size_t nb=0;if(q.turn==1){for(auto e:q.board_moves(1))if(q.legal_bm(e))++nb;}else{for(auto e:q.board_moves(1))if(q.legal(e))++nb;}
             if(nb==0){auto ev=evasions(q,n-1);
                 if(ev.empty()){if(hints_on&&n>=3)chint[key(b,0)]=m;return ca[k]=true;}scored.push_back({ev.size(),m});}
+            else if(n<3){if(!has_evasion(q,n-1)){if(hints_on&&n>=3)chint[key(b,0)]=m;return ca[k]=true;}}   // 盤上の駒を動かす受けが全部無駄合のときも詰み
             else scored.push_back({nb,m});}
         if(n>=3) {
             if(AORD==0)std::stable_sort(scored.begin(),scored.end(),[](const auto& a,const auto& b){return a.first<b.first;});
@@ -503,8 +534,9 @@ struct Solver {
             if(hi!=dhint.end()) {
                 Move hm=hi->second;Board q=b;q.push(hm);
                 if(!mate(q,n-1)) {
-                    if(hm.from>=0)return cd[k]=false;
-                    std::vector<Move> nm,dr;int at;evasions_split(b,nm,dr,at);
+                    int at=-1;
+                    if(hm.from>=0){std::vector<int> sqs;if(!interp_squares(b,at,sqs)||!is_interp_move(b,hm,sqs))return cd[k]=false;}
+                    else {std::vector<int> sqs;interp_squares(b,at,sqs);}
                     if(!futile(b,hm,at,n))return cd[k]=false;
                 }
             }
