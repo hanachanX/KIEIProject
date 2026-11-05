@@ -1125,10 +1125,9 @@ class MainWindow(QMainWindow):
         bn_row.addWidget(self.tsume_exit_btn)
         lv.addLayout(bn_row)
         self.tsume_memo = QTextBrowser()               # 問題のメモ（棋譜コメントとは別の枠）
-        self.tsume_memo.setMaximumHeight(84)
+        self.tsume_memo.setMaximumHeight(110)
         self.tsume_memo.setStyleSheet("background:#e8f1fb; color:#1c3553; border:1px solid #9bb9d8; border-radius:4px;")
         self.tsume_memo.hide()
-        lv.addWidget(self.tsume_memo)
         lv.addWidget(self.boardw, 1)
         self.graph = EvalGraph()
         self.graph.plotClicked.connect(self.go_to_ply)
@@ -1308,6 +1307,7 @@ class MainWindow(QMainWindow):
         self.comment_box.setMaximumHeight(190)
         self.comment_box.setStyleSheet("background:#fffbe8;")
         self.comment_box.hide()
+        rv.addWidget(self.tsume_memo)                  # メモは右の列に出す（盤の下に置くと盤が小さくなるため）
         rv.addWidget(self.comment_box)
 
         row = QHBoxLayout()
