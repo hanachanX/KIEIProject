@@ -3050,8 +3050,21 @@ class MainWindow(QMainWindow):
         if not self.last_mate or tsume_verify is None:
             return
         sfen, pv = self.last_mate
+        if getattr(self, "_verify_running", False):          # 検証中にもう一度押すと、中断する
+            tsume_verify.CANCEL.set()
+            rp0 = getattr(self, "_cur_repair", None)
+            if rp0 is not None:
+                rp0.deadline = 0                              # Komoringでの手順直しも打ち切る
+            (self.btn_mate_check if kind == "line" else self.btn_mate_alt).setEnabled(False)
+            self.status.setText("中断しています…（数秒で止まります）")
+            return
+        tsume_verify.CANCEL.clear()
+        self._verify_running = True
+        self._verify_btn = self.btn_mate_check if kind == "line" else self.btn_mate_alt
         self.btn_mate_check.setEnabled(False)
         self.btn_mate_alt.setEnabled(False)
+        self._verify_btn.setText("中断")
+        self._verify_btn.setEnabled(True)
         self.status.setText("棋慧エンジンで検証中…（短い問題なら数秒です）")
 
         self.kh_ask_n, self.kh_ask_sec, self.kh_ask_by = 0, 0.0, {}
@@ -3076,6 +3089,7 @@ class MainWindow(QMainWindow):
                         vprog["text"] = "無駄合が見つかったため、Komoringで手順を直しています"
                         try:
                             rp = tsume_kh_repair.Repair(tsume_kh_repair.Asker(self._kh_ask), max_asks=600, time_limit=90)
+                            self._cur_repair = rp
                             rr = rp.run(sfen)
                             if rr.get("state") == "mate" and rr.get("line"):
                                 res["repair"] = {
@@ -3106,6 +3120,9 @@ class MainWindow(QMainWindow):
                 res = {"state": "error", "msg": str(e), "sec": 0.0}
             vprog["done"] = True
             tsume_verify.PROGRESS = None
+            self._cur_repair = None
+            if tsume_verify.CANCEL.is_set() and res.get("state") in ("timeout", "error", "warn", "ok"):
+                res = {"state": "skip", "msg": "中断しました。", "sec": time.time() - t_v0}
             res["kind"], res["sfen"], res["pv"] = kind, sfen, list(pv)
             res["kh_used"], res["kh_asks"], res["kh_sec"] = use_kh, self.kh_ask_n, self.kh_ask_sec
             res["kh_by"] = {k: list(v) for k, v in self.kh_ask_by.items()}
@@ -3125,6 +3142,10 @@ class MainWindow(QMainWindow):
         self.btn_kiei.setText("棋慧で解く")
         self._kiei_running = False
         self._prog_active = False
+        if getattr(self, "_verify_running", False):
+            self._verify_running = False
+            self.btn_mate_check.setText("手順検証")
+            self.btn_mate_alt.setText("詳細検討")
         tsume_verify.CANCEL.clear()
         same = bool(self.last_mate and self.last_mate[0] == r.get("sfen"))
         if same:
