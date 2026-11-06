@@ -54,6 +54,7 @@ class _Context:
             self.ptr = None
 
 
+CACHE_CAP = 0   # 記憶する局面の上限（0=DLLの既定。大きいほど速いがメモリを使う）。set_cache_cap で変える
 TIMEOUT = 180.0   # 1回の計算の制限時間(秒)。超えると ValueError('timeout')
 _cancelled = False
 
@@ -102,6 +103,14 @@ def _run(op, board=None, n=0, color=0, seed=0, budget=600, seconds=None, text=No
     if not hasattr(_local, "context"):
         _local.context = _Context()
     ctx = _local.context
+    if getattr(ctx, "cap", None) != CACHE_CAP:
+        ctx.cap = CACHE_CAP
+        if CACHE_CAP:
+            try:
+                ctx.lib.tsume_run(ctx.ptr, b"cap", b"", int(CACHE_CAP), 0, 0, 0, 0.0,
+                                  ctypes.create_string_buffer(64), 64)
+            except Exception:
+                pass          # 古いDLLには無い機能。そのまま従来どおり動く
     if text is None:
         text = board.sfen() if board is not None else ""
     buf = ctypes.create_string_buffer(65536)
@@ -117,6 +126,12 @@ def _run(op, board=None, n=0, color=0, seed=0, budget=600, seconds=None, text=No
 
 def _moves(text):
     return [shogi.Move.from_usi(m) for m in text.split()]
+
+
+def set_cache_cap(n):
+    """記憶する局面の上限を決める（0=DLLの既定）。次の計算から効く。メモリの目安：1000万件で約350MB。"""
+    global CACHE_CAP
+    CACHE_CAP = max(0, int(n))
 
 
 def set_floor(k):

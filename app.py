@@ -812,6 +812,10 @@ class SettingsDialog(QDialog):
         self.msec.setValue(int(cfg.get("mate_sec", 60)))
         self.msec.setToolTip("「詰みを探す」の制限時間(秒)。0=無制限（停止ボタンで止める）")
         form.addRow("詰み探索の時間(秒)", self.msec)
+        self.lowspec = QCheckBox("低スペックPC（棋慧エンジンのメモリ使用を抑える）")
+        self.lowspec.setChecked(bool(cfg.get("low_spec", False)))
+        self.lowspec.setToolTip("チェックなし：長い詰将棋の検証が速い（メモリを最大約1.5GB使う）\nチェックあり：メモリを約300MBまでに抑える（長い問題は遅くなることがある）。メモリ8GB以下のPC向け")
+        form.addRow("棋慧エンジンのメモリ", self.lowspec)
         self.mpv = QSpinBox()
         self.mpv.setRange(1, 10)
         self.mpv.setValue(int(cfg.get("multipv", 3)))
@@ -888,12 +892,21 @@ class SettingsDialog(QDialog):
                     opts[k.strip()] = v.strip()
         cfg.update({"engine_path": self.engine.text().strip(), "engine_options": opts,
                     "tsume_engine_path": self.tengine.text().strip(), "tsume_sec": self.tsec.value(),
-                    "movetime_sec": self.sec.value(), "mate_sec": self.msec.value(), "game_sec": self.gsec.value(), "game_workers": self.gwork.value(), "multipv": self.mpv.value(),
+                    "movetime_sec": self.sec.value(), "mate_sec": self.msec.value(), "low_spec": self.lowspec.isChecked(), "game_sec": self.gsec.value(), "game_workers": self.gwork.value(), "multipv": self.mpv.value(),
                     "gemini_api_key": self.key.text().strip(), "gemini_model": self.model.text().strip(),
                     "llm_provider": self.provider.currentData(),
                     "openai_api_key": self.okey.text().strip(), "openai_model": self.omodel.currentText().strip(),
                     "anthropic_api_key": self.akey.text().strip(), "anthropic_model": self.amodel.currentText().strip(),
                     "groq_api_key": self.gkey.text().strip(), "groq_model": self.gmodel.currentText().strip()})
+
+
+def apply_cache_cap(cfg):
+    """設定の「低スペックPC」に合わせて、棋慧エンジンの記憶の上限を決める（通常4000万局面≒1.5GB、低スペック800万局面≒0.3GB）。"""
+    try:
+        import tsume_native
+        tsume_native.set_cache_cap(8000000 if cfg.get("low_spec") else 40000000)
+    except Exception:
+        pass
 
 
 # ====================================================================== メイン画面
@@ -1050,6 +1063,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("棋慧")
         self.resize(1440, 780)
         self.cfg = core.load_config(CONFIG_PATH)
+        apply_cache_cap(self.cfg)
         self.engine = None
         self.engine_lock = threading.Lock()
         self.tsume_eng = None                  # 詰将棋専用エンジン（KomoringHeights）
@@ -3981,6 +3995,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             dlg.apply_to(self.cfg)
             save_config(self.cfg)
+            apply_cache_cap(self.cfg)
             self.update_ai_labels()
             self.gen += 1
             self.close_engine()

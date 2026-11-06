@@ -25,7 +25,7 @@
 #define AORD 0
 #endif
 #ifndef TSUME_CAP
-#define TSUME_CAP 8000000
+#define TSUME_CAP 40000000
 #endif
 namespace {
 constexpr int P=1,L=2,N=3,S=4,G=5,B=6,R=7,K=8;
@@ -704,6 +704,7 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
         return s.forward(Pos::from(Board::parse(q)),parse_move(m),Pos::from(Board::parse(p)),color)?"1":"0";
     }
     if(op=="oracle_min"){s.oracle_min=n<3?3:n;return "";}
+    if(op=="cap"){s.cache_cap=n>0?size_t(n):size_t(TSUME_CAP);return "";}
     if(op=="batch"){s.batch_on=n!=0;s.clear();return "";}
     if(op=="futile_floor"){s.futile_floor=n<0?0:n;s.clear();return "";}
     if(op=="final_alt"){s.final_alt=n!=0;return "";}
