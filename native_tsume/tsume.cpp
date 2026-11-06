@@ -385,12 +385,17 @@ struct Pos {
 struct Timeout {};
 // 中断用：どのスレッドからでも立てられる。立てると、計算中の探索が次の確認のところで止まる（時間切れと同じ扱い）
 static std::atomic<bool> g_cancel{false};
+// 128ビットの鍵（局面の見分け用）。64ビットより衝突がずっと少ない。
+struct Key128 {uint64_t a,b;bool operator==(const Key128& o) const {return a==o.a&&b==o.b;}};
+struct KH {size_t operator()(const Key128& k) const {return size_t(k.a);}};
+static inline uint64_t sm64(uint64_t z){z+=0x9E3779B97F4A7C15ULL;z=(z^(z>>30))*0xBF58476D1CE4E5B9ULL;z=(z^(z>>27))*0x94D049BB133111EBULL;return z^(z>>31);}
+static inline Key128 kmix(const Key128& x,uint64_t t){return Key128{sm64(x.a^sm64(t)),sm64(x.b+t*0xD6E8FEB86659FD93ULL+0x1234567ULL)};}
 struct Solver {
-    std::unordered_map<uint64_t,bool> ca,cd,cf,cb;   // cb: 升ごとの無駄合まとめ判定の結果
+    std::unordered_map<Key128,bool,KH> ca,cd,cf,cb;   // cb: 升ごとの無駄合まとめ判定の結果
     bool batch_on=true;   // 同じ升の合駒を、玉方の持駒を減らさない一番有利な状態で1回だけ判定する（詰めば、その升の全種類が無駄合）
     // Optional oracle: returns 1 (mate under normal rules), -1 (no mate), 0 (unknown). Used only to prune attacker nodes.
     int (*oracle)(const char*)=nullptr;
-    std::unordered_map<uint64_t,int> ost;
+    std::unordered_map<Key128,int,KH> ost;
     long long o_calls=0,o_pruned=0;
     int oracle_min=5;
     int futile_floor=0;   // 無駄合の判定に使う手数の下限（0=使わない）。浅い探索でも無駄合を見抜くための、短い手数の再確認用
@@ -401,21 +406,34 @@ struct Solver {
     std::chrono::steady_clock::time_point deadline;
     void tick(){if(timed&&(g_cancel.load(std::memory_order_relaxed)||std::chrono::steady_clock::now()>=deadline))throw Timeout{};}
     void clear(){ca.clear();cd.clear();cf.clear();cb.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}
-    std::unordered_map<uint64_t,Move> chint,dhint;   // move-ordering hints (do not affect results)
+    std::unordered_map<Key128,Move,KH> chint,dhint;   // move-ordering hints (do not affect results)
     bool hints_on=false;
     size_t cache_cap=TSUME_CAP;
     void trim(){if(ca.size()+cd.size()+cf.size()+dom_count>cache_cap){ca.clear();cd.clear();cf.clear();ost.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}}
     static uint64_t fnv(const std::string& k,uint64_t h=1469598103934665603ULL){for(unsigned char c:k){h^=c;h*=1099511628211ULL;}h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;}
-    uint64_t key(const Board& b,int n) {
-        uint64_t h=1469598103934665603ULL;
-        auto put=[&](unsigned c){h^=(c&255u);h*=1099511628211ULL;};
-        for(int v:b.sq)put(unsigned(v+16));
-        put(unsigned(b.turn));
-        for(auto& hh:b.hand)for(int p=P;p<K;++p){put(unsigned(hh[p]&255));put(unsigned((hh[p]>>8)&255));}
-        for(int i=0;i<4;++i)put((unsigned(n)>>(i*8))&255u);
-        put(unsigned(futile_floor)&255u);   // 判定の深さの設定が違えば結果も違うので、鍵に混ぜる（切り替えても記憶を消さずに済む）
-        h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;
+    // 盤面（と、必要なら持駒）・手番・残り手数・判定の深さ設定から、128ビットの鍵を作る。8バイトずつまとめて処理する。
+    Key128 hashboard(const Board& b,int n,bool hands) {
+        uint64_t a=0x243F6A8885A308D3ULL,c=0x13198A2E03707344ULL;
+        auto mixw=[&](uint64_t w){
+            a=(a^w)*0x9E3779B97F4A7C15ULL;a=(a<<27)|(a>>37);a*=0xC2B2AE3D27D4EB4FULL;
+            c=(c+w)*0x165667B19E3779F9ULL;c^=c>>29;c=(c<<31)|(c>>33);
+        };
+        for(int i=0;i<81;i+=8){
+            uint64_t w=0;
+            for(int j=0;j<8&&i+j<81;++j)w|=(uint64_t(b.sq[i+j]+16)&255u)<<(8*j);
+            mixw(w);
+        }
+        if(hands) {
+            for(auto& hh:b.hand){
+                uint64_t w=0;int cnt=0;
+                for(int p=P;p<K;++p){w|=(uint64_t(hh[p])&0xFFFFu)<<(16*cnt);if(++cnt==4){mixw(w);w=0;cnt=0;}}
+                mixw(w);
+            }
+        }
+        mixw(uint64_t(b.turn)|(uint64_t(unsigned(n))<<8)|(uint64_t(unsigned(futile_floor)&255u)<<40)|(hands?(1ULL<<48):0));   // 判定の深さの設定が違えば結果も違うので、鍵に混ぜる
+        return Key128{sm64(a),sm64(c^0x5851F42D4C957F2DULL)};
     }
+    Key128 key(const Board& b,int n) {return hashboard(b,n,true);}
     std::vector<Move> checks(const Board& b) {
         tick();std::vector<Move> out;int k=b.king(1);
         for(int p:b.order[0])if(b.hand[0][p]>0)for(int s=0;s<81;++s)
@@ -430,7 +448,7 @@ struct Solver {
         for(auto m:b.board_moves(0))if(b.legal(m)){if(b.gives_check(m))out.push_back(m);}   // 攻め方に玉がある（双玉）とき、自玉に王手がかかる手は指せない
         return out;
     }
-    std::unordered_set<uint64_t> inprog;
+    std::unordered_set<Key128,KH> inprog;
     int fdepth=0,maxDepth=12;
     // ■無駄合の定義について（この判定は定義の選び方で結果が変わる。詳しくは https://w.atwiki.jp/mudaai/pages/29.html ）
     //  ・棋慧の定義：合駒（打つ合駒・盤上の駒を動かす移動合の両方）を攻め方のどの駒で取ってもよく、
@@ -442,7 +460,7 @@ struct Solver {
     // if mate is still reached within n plies, the drop is futile (n=0: only when no evasion remains).
     bool futile(const Board& b,const Move& d,int a,int n=0) {
         if(n>=1&&n<futile_floor)n=futile_floor;
-        auto k=key(b,n)*0x9E3779B97F4A7C15ULL+uint64_t(d.to+1)*131+uint64_t(d.drop)*17+(d.from<0?7:uint64_t(d.from)*257)+(d.promotion?3:0);k^=k>>31;auto it=cf.find(k);if(it!=cf.end())return it->second;
+        Key128 k=kmix(key(b,n),uint64_t(d.to+1)*131+uint64_t(d.drop)*17+(d.from<0?7:uint64_t(d.from)*257)+(d.promotion?3:0));auto it=cf.find(k);if(it!=cf.end())return it->second;
         if(inprog.count(k))return false;
         const int rem=d.from<0?d.drop:base(std::abs(b.sq[d.from]));   // 合駒になった駒の種類（移動合も同じ扱い）
         bool wide=n>=1&&fdepth<maxDepth;
@@ -465,7 +483,7 @@ struct Solver {
                 return false;
             };
             if(wide&&batch_on&&d.from<0) {
-                uint64_t kb=key(b,n)*0x9E3779B97F4A7C15ULL+uint64_t(d.to+1)*7919+13;kb^=kb>>29;
+                Key128 kb=kmix(key(b,n),uint64_t(d.to+1)*7919+13);
                 auto ib=cb.find(kb);
                 if(ib!=cb.end())res=ib->second;
                 else if(!inprog.count(kb)) {
@@ -554,18 +572,10 @@ struct Solver {
     }
     // Hand-dominance cache: a result for one hand pair also answers positions with a better/worse hand pair.
     struct DomEntry {uint8_t a[7],d[7];int n;bool res;};
-    std::unordered_map<uint64_t,std::vector<DomEntry>> dom[2];
+    std::unordered_map<Key128,std::vector<DomEntry>,KH> dom[2];
     size_t dom_count=0;
     bool dom_on=true;
-    uint64_t dom_key(const Board& b,int n) {
-        uint64_t h=1469598103934665603ULL;
-        auto put=[&](unsigned c){h^=(c&255u);h*=1099511628211ULL;};
-        for(int v:b.sq)put(unsigned(v+16));
-        put(unsigned(b.turn));
-        for(int i=0;i<4;++i)put((unsigned(n)>>(i*8))&255u);
-        put(unsigned(futile_floor)&255u);   // 判定の深さの設定が違えば結果も違うので、鍵に混ぜる（切り替えても記憶を消さずに済む）
-        h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;
-    }
+    Key128 dom_key(const Board& b,int n) {return hashboard(b,n,false);}
     bool dom_get(int w,const Board& b,int n,bool& res) {
         if(!dom_on)return false;
         auto it=dom[w].find(dom_key(b,0));if(it==dom[w].end())return false;
@@ -607,7 +617,7 @@ struct Solver {
             else {++o_calls;st=oracle(b.sfen().c_str());ost[ok]=st;}
             if(st<0){++o_pruned;return ca[k]=false;}
         }
-        uint64_t hk=0;bool have_h=false;Move hm;
+        Key128 hk{0,0};bool have_h=false;Move hm;
         if(hints_on&&n>=3) {
             hk=key(b,0);auto hi=chint.find(hk);
             if(hi!=chint.end()) {
@@ -640,7 +650,7 @@ struct Solver {
     }
     bool defenders_impl(const Board& b,int n) {
         tick();auto k=key(b,n);auto it=cd.find(k);if(it!=cd.end())return it->second;
-        uint64_t hk=0;
+        Key128 hk{0,0};
         if(hints_on&&n>=2) {
             hk=key(b,0);auto hi=dhint.find(hk);
             if(hi!=dhint.end()) {
