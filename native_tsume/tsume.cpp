@@ -209,6 +209,62 @@ struct Board {
         return legal_body(m);
     }
     // For moves produced by board_moves(turn): only the mobility test of pseudo() is still needed.
+    // 玉方(後手)の局面で、盤上の駒を動かす応手（合法手）を集める。王手がかかっているときは、応手になりえない手
+    // （玉以外で、行き先が「王手の駒の升」でも「間の升」でもない手）を、重い合法判定の前に捨てる。
+    // 結果と並び順は、board_moves(1)の全部をlegal_bmにかけた場合と同じ。
+    static bool& evfilter_on(){static bool on=true;return on;}
+    void defender_legal_moves(std::vector<Move>& out) const {
+        bool use=false;bool mask[81];
+        if(evfilter_on()){
+            int k=king(1);
+            if(k>=0){
+                int a=-1,count=0;
+                for(int s=0;s<81;++s)if(sq[s]>0&&attacks(sq[s],s,k,0)){a=s;++count;}
+                if(count>=1){
+                    use=true;std::fill(mask,mask+81,false);
+                    if(count==1){
+                        mask[a]=true;
+                        int pt=std::abs(sq[a]),dr=a/9-k/9,df=a%9-k%9,dist=std::max(std::abs(dr),std::abs(df));
+                        if((pt==L||pt==B||pt==R||pt==13||pt==14)&&dist>1&&(dr==0||df==0||std::abs(dr)==std::abs(df))){
+                            int sr=(dr>0)-(dr<0),sf=(df>0)-(df<0);
+                            for(int i=1;i<dist;++i)mask[(k/9+sr*i)*9+k%9+sf*i]=true;
+                        }
+                    }
+                }
+            }
+        }
+        if(!use||!direct_on()) {
+            for(auto m:board_moves(1)){
+                if(use&&std::abs(sq[m.from])!=K&&!mask[m.to])continue;
+                if(legal_bm(m))out.push_back(m);
+            }
+            return;
+        }
+        // 応手になりうる手を、最初から直接作る（全部の手を作って捨てない）。並び順は board_moves と同じ（移動元の升→行き先の升→不成→成）。
+        Move cand[512];int nc=0;
+        for(int s=0;s<81;++s) {
+            if(!sq[s]||color_of(sq[s])!=1)continue;
+            int pt=std::abs(sq[s]);
+            if(pt==K) {
+                int sr=s/9,sf=s%9;
+                for(int dr=-1;dr<=1;++dr)for(int df=-1;df<=1;++df) {
+                    if(!dr&&!df)continue;
+                    int r=sr+dr,f=sf+df;if(r<0||r>=9||f<0||f>=9)continue;
+                    int t=r*9+f;if(sq[t]&&color_of(sq[t])==1)continue;
+                    cand[nc++]={s,t,0,false};
+                }
+            } else {
+                for(int t=0;t<81;++t) {
+                    if(!mask[t]||(sq[t]&&color_of(sq[t])==1))continue;
+                    if(!attacks(pt,s,t,1))continue;
+                    cand[nc++]={s,t,0,false};
+                    if(promoted[pt]&&(zone(s,1)||zone(t,1)))cand[nc++]={s,t,0,true};
+                }
+            }
+        }
+        for(int i=0;i<nc;++i)if(legal_bm(cand[i]))out.push_back(cand[i]);
+    }
+    static bool& direct_on(){static bool on=true;return on;}
     bool legal_bm(const Move& m) const {
         if(!m.promotion&&!mobile(std::abs(sq[m.from]),m.to,turn))return false;
         return legal_body(m);
@@ -244,6 +300,16 @@ struct Board {
         return false;
     }
     // True if the move gives check to the opponent king (no Board copy).
+    // gives_check と同じだが、玉方の玉の升 k を呼び出し側が渡す（毎回81升を探さない）。
+    bool gives_check_k(const Move& m,int k) const {
+        Board* self=const_cast<Board*>(this);
+        int mover=turn;
+        Undo u{self,m.from,m.to,m.from>=0?sq[m.from]:0,sq[m.to]};
+        if(m.from<0)self->sq[m.to]=sign(mover)*m.drop;
+        else {int pt=std::abs(sq[m.from]);self->sq[m.to]=sign(mover)*(m.promotion?promoted[pt]:pt);self->sq[m.from]=0;}
+        return attacked(mover,k);
+    }
+    static bool& fastchecks_on(){static bool on=true;return on;}
     bool gives_check(const Move& m) const {
         Board* self=const_cast<Board*>(this);
         int mover=turn;
@@ -356,6 +422,10 @@ struct Solver {
                 // 打ち歩詰めは反則。玉との間でピンされて歩を取れない駒しか無い場合も、取れないので詰み＝反則（python-shogiの判定はここが甘い）
                 if(p==P){Board q=b;q.push(m);if(!has_evasion(q,0))continue;}
                 out.push_back(m);}
+        if(Board::fastchecks_on()&&b.king(0)<0) {
+            // 攻め方に玉が無い（普通の詰将棋）ときは、「指した後に自玉が取られる」ことは無いので、合法判定を省く（動きの確認だけ残す）
+            for(auto m:b.board_moves(0))if((m.promotion||mobile(std::abs(b.sq[m.from]),m.to,b.turn))&&b.gives_check_k(m,k))out.push_back(m);
+        } else
         for(auto m:b.board_moves(0))if(b.legal(m)){if(b.gives_check(m))out.push_back(m);}   // 攻め方に玉がある（双玉）とき、自玉に王手がかかる手は指せない
         return out;
     }
@@ -427,7 +497,7 @@ struct Solver {
     }
     std::vector<Move> evasions(const Board& b,int bud=0) {
         tick();std::vector<Move> out;
-        if(b.turn==1){for(auto m:b.board_moves(1))if(b.legal_bm(m))out.push_back(m);}
+        if(b.turn==1){b.defender_legal_moves(out);}
         else for(auto m:b.board_moves(1))if(b.legal(m))out.push_back(m);
         int k=b.king(1),a=-1,count=0;
         for(int s=0;s<81;++s)if(b.sq[s]>0&&b.attacks(b.sq[s],s,k,0)){a=s;++count;}
@@ -451,7 +521,7 @@ struct Solver {
     // Like evasions() but returns interposition drops without testing futility (caller tests lazily).
     void evasions_split(const Board& b,std::vector<Move>& normal,std::vector<Move>& drops,int& att) {
         tick();att=-1;
-        if(b.turn==1){for(auto m:b.board_moves(1))if(b.legal_bm(m))normal.push_back(m);}
+        if(b.turn==1){b.defender_legal_moves(normal);}
         else for(auto m:b.board_moves(1))if(b.legal(m))normal.push_back(m);
         int k=b.king(1),a=-1,count=0;
         for(int s=0;s<81;++s)if(b.sq[s]>0&&b.attacks(b.sq[s],s,k,0)){a=s;++count;}
@@ -546,7 +616,7 @@ struct Solver {
         }
         std::vector<std::pair<size_t,Move>> scored;
         for(auto m:checks(b)) {Board q=b;q.push(m);
-            size_t nb=0;if(q.turn==1){for(auto e:q.board_moves(1))if(q.legal_bm(e))++nb;}else{for(auto e:q.board_moves(1))if(q.legal(e))++nb;}
+            size_t nb=0;if(q.turn==1){std::vector<Move> tmp;q.defender_legal_moves(tmp);nb=tmp.size();}else{for(auto e:q.board_moves(1))if(q.legal(e))++nb;}
             if(nb==0){auto ev=evasions(q,n-1);
                 if(ev.empty()){if(hints_on&&n>=3)chint[key(b,0)]=m;return ca[k]=true;}scored.push_back({ev.size(),m});}
             else if(n<3){if(!has_evasion(q,n-1)){if(hints_on&&n>=3)chint[key(b,0)]=m;return ca[k]=true;}}   // 盤上の駒を動かす受けが全部無駄合のときも詰み
@@ -704,6 +774,9 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
         return s.forward(Pos::from(Board::parse(q)),parse_move(m),Pos::from(Board::parse(p)),color)?"1":"0";
     }
     if(op=="oracle_min"){s.oracle_min=n<3?3:n;return "";}
+    if(op=="evfilter"){Board::evfilter_on()=n!=0;s.clear();return "";}
+    if(op=="fastchecks"){Board::fastchecks_on()=n!=0;s.clear();return "";}
+    if(op=="direct"){Board::direct_on()=n!=0;s.clear();return "";}
     if(op=="cap"){s.cache_cap=n>0?size_t(n):size_t(TSUME_CAP);return "";}
     if(op=="batch"){s.batch_on=n!=0;s.clear();return "";}
     if(op=="futile_floor"){s.futile_floor=n<0?0:n;s.clear();return "";}

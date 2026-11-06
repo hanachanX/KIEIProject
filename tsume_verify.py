@@ -788,6 +788,7 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
     try:
         N = None
         fallback = []
+        pre = None          # 詰みを確認した直後（記憶が温かいうち）に作っておいた、手順と余詰の確認結果
         n = 1
         while n <= max_n:
             if CANCEL.is_set():
@@ -807,6 +808,24 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
                         fallback = [m.usi() for m in T.solve(b, n)][:1]
                     except ValueError:
                         fallback = []
+                    if fallback:
+                        # 手順の組み立てと余詰の確認を、記憶が残っているうちに先に済ませる（後回しにすると、短い手数の再確認で
+                        # 記憶が消え、同じ読みをやり直すことになり、長い問題では時間切れになる）
+                        _say(f"{n}手詰の手順を作成中")
+                        inf0 = {}
+                        T.TIMEOUT = max(1.0, deadline + 60 - _time.time())
+                        pv0 = main_line(sfen, [fallback[0]], n, max(deadline, _time.time()) + 60, inf0)
+                        wins0 = None
+                        if not inf0.get("cut") and not CANCEL.is_set():
+                            _say(f"{n}手詰。余詰を確認中")
+                            T.TIMEOUT = 8.0
+                            try:
+                                wins0 = attacker_wins(b, n)
+                            except ValueError as e:
+                                if "timeout" not in str(e):
+                                    raise
+                        pre = (n, pv0, inf0, wins0)
+                        _say(f"{n}手詰を確認。短い手数を再確認中")
                     for k in range(1, n, 2):          # もっと短い手数で詰まないか、無駄合の判定を深くして確かめ直す
                         if _time.time() > deadline:
                             break
@@ -839,6 +858,17 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
             n += 2
         if N is None:
             res["state"] = "nomate"; res["msg"] = f"{max_n}手以内には詰みが見つかりませんでした（不詰、またはもっと長い手数）。"
+            return res
+        if pre is not None and pre[0] == N and not pre[2].get("cut") and pre[1] and not CANCEL.is_set():
+            # 先に作っておいた手順をそのまま使う（短い手数の再確認で手数が変わらなかった場合）
+            wins = list(pre[3]) if pre[3] else list(fallback)
+            if pre[1][0] in wins:
+                wins.remove(pre[1][0])
+            wins.insert(0, pre[1][0])
+            if not pre[3]:
+                res["msg"] = "他の初手（余詰）の有無は、時間がかかるため確認していません。"
+            res["N"], res["firsts"], res["pv"] = N, wins, list(pre[1])
+            res["state"] = "ok"
             return res
         _say(f"{N}手詰。余詰を確認中")
         T.TIMEOUT = max(1.0, min(8.0, deadline - _time.time()))
