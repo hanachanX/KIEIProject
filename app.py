@@ -908,6 +908,7 @@ class Sig(QObject):
     shot_err = pyqtSignal(str)
     mate = pyqtSignal(object)
     verify = pyqtSignal(object)
+    kiei_prog = pyqtSignal(str)       # 「棋慧で解く」の途中経過（画面下の表示用）
     game_prog = pyqtSignal(str, int, object)
     game_done = pyqtSignal(str, bool)
     game_err = pyqtSignal(str)
@@ -1091,6 +1092,7 @@ class MainWindow(QMainWindow):
         self.sig.gemini.connect(self.on_gemini)
         self.sig.mate.connect(self.on_mate)
         self.sig.verify.connect(self.on_verify)
+        self.sig.kiei_prog.connect(lambda s: self.status.setText(s) if getattr(self, "_kiei_running", False) else None)
         self.sig.game_prog.connect(self.on_game_prog)
         self.sig.game_done.connect(self.on_game_done)
         self.sig.game_err.connect(self.on_game_err)
@@ -2861,8 +2863,16 @@ class MainWindow(QMainWindow):
 
         def work():
             t0 = time.time()
+            prog = {"text": "棋慧だけで解いています…", "done": False}
+
+            def ticker():                  # 1秒ごとに、途中経過と経過時間を画面に出す
+                while not prog["done"]:
+                    if not tsume_verify.CANCEL.is_set():
+                        self.sig.kiei_prog.emit(f"{prog['text']}（経過{int(time.time() - t0)}秒／最長3分）")
+                    time.sleep(1.0)
+            threading.Thread(target=ticker, daemon=True).start()
             try:
-                sv = tsume_verify.solve_first(sfen, time_limit=150)
+                sv = tsume_verify.solve_first(sfen, time_limit=150, progress=lambda s: prog.__setitem__("text", s))
                 if sv["state"] != "ok":
                     res = {"state": "timeout" if sv["state"] == "timeout" else ("skip" if sv["state"] in ("skip", "nomate") else "error"),
                            "msg": sv["msg"], "sec": 0.0}
@@ -2872,12 +2882,14 @@ class MainWindow(QMainWindow):
                     pv = []
                 else:
                     pv = list(sv["pv"])
+                    prog["text"] = "手順の変化（玉方の別の受け）を調べています…"
                     res = tsume_verify.detail(sfen, pv, time_limit=max(20, 175 - int(time.time() - t0)), fmt=core.move_ja)
                     res["firsts"] = list(sv["firsts"])
                     if sv["pv"]:
                         self.last_mate = (sfen, pv)
             except Exception as e:
                 res, pv = {"state": "error", "msg": str(e), "sec": 0.0}, []
+            prog["done"] = True
             res["sec"] = time.time() - t0
             res["by_kiei"] = True
             res["kind"], res["sfen"], res["pv"] = "alt", sfen, pv

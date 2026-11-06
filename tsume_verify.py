@@ -747,7 +747,7 @@ def quick_check(sfen, pv, time_limit=20, fmt=None):
         T.TIMEOUT = old
         res["sec"] = _time.time() - t0
 
-def solve_first(sfen, time_limit=150, max_n=31):
+def solve_first(sfen, time_limit=150, max_n=31, progress=None):
     """棋慧だけで詰みを探す（Komoring不要）。短い手数から順に、詰む最短の手数 N を求める。
     返り値: dict(state='ok'|'nomate'|'timeout'|'skip'|'error', N, firsts(初手の候補), pv(手順の一例), upto(ここまでは詰まないと確認した手数), msg, sec)"""
     t0 = _time.time()
@@ -759,6 +759,12 @@ def solve_first(sfen, time_limit=150, max_n=31):
     if b.turn != shogi.BLACK:
         res["msg"] = "先手（攻め方）の手番の詰将棋の形でないため、解けません。「手番切替」で攻め方の手番にしてください。"
         return res
+    def _say(text):
+        if progress is not None:
+            try:
+                progress(text)
+            except Exception:
+                pass
     old = T.TIMEOUT
     deadline = t0 + time_limit
     T.set_deadline(deadline + 90)      # 手順の組み立てなども含め、これを過ぎたら何をしていても打ち切る
@@ -775,9 +781,11 @@ def solve_first(sfen, time_limit=150, max_n=31):
                 res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
                 return res
             T.TIMEOUT = max(1.0, left)
+            _say(f"{n}手詰めかどうかを読んでいます…（{res['upto']}手までは詰まないことを確認済み）")
             try:
                 if T.can_mate(b, n):
                     N = n
+                    _say(f"{n}手で詰むことを確認しました。もっと短い手数で詰まないかを確かめています…")
                     try:      # 詰む初手を、キャッシュが温かいうちに先に1つ取っておく（後の検算でキャッシュが消えるため）
                         fallback = [m.usi() for m in T.solve(b, n)][:1]
                     except ValueError:
@@ -815,6 +823,7 @@ def solve_first(sfen, time_limit=150, max_n=31):
         if N is None:
             res["state"] = "nomate"; res["msg"] = f"{max_n}手以内には詰みが見つかりませんでした（不詰、またはもっと長い手数）。"
             return res
+        _say(f"{N}手詰めです。ほかの初手（余詰）がないかを調べています…")
         T.TIMEOUT = max(1.0, min(8.0, deadline - _time.time()))
         try:
             wins = attacker_wins(b, N)
@@ -844,6 +853,7 @@ def solve_first(sfen, time_limit=150, max_n=31):
                 return res
             res["msg"] = "他の初手（余詰）の有無は、時間がかかるため確認していません。"
         res["N"], res["firsts"] = N, wins
+        _say(f"{N}手詰めの手順を組み立てています…")
         info = {}
         res["pv"] = main_line(sfen, [wins[0]], N, pv_deadline, info)
         if CANCEL.is_set():
