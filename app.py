@@ -2898,7 +2898,7 @@ class MainWindow(QMainWindow):
                 else:
                     pv = list(sv["pv"])
                     prog["text"] = "変化（玉方の別の受け）を検討中"
-                    res = tsume_verify.detail(sfen, pv, time_limit=max(20, 175 - int(time.time() - t0)), fmt=core.move_ja)
+                    res = tsume_verify.detail(sfen, pv, time_limit=max(120, lim), fmt=core.move_ja)     # 変化の検討も、設定の「詰み探索の時間」を目安にする（最低120秒。解くのにかかった時間は引かない）
                     res["firsts"] = list(sv["firsts"])
                     if sv["pv"]:
                         self.last_mate = (sfen, pv)
