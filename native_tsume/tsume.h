@@ -10,14 +10,15 @@
 // Each context owns its caches and error string. Do not share one context concurrently.
 TSUME_API void* TSUME_CALL tsume_create();
 TSUME_API void TSUME_CALL tsume_destroy(void* context);
+// Cancel (on=1) / re-arm (on=0): makes every running operation stop at its next time check, as if it timed out.
+TSUME_API void TSUME_CALL tsume_cancel(int on);
 // Optional: callback that answers whether a position (attacker to move) is mate under normal rules.
 TSUME_API void TSUME_CALL tsume_set_oracle(void* context, int (TSUME_CALL *fn)(const char* sfen));
 TSUME_API const char* TSUME_CALL tsume_error(void* context);
 TSUME_API int TSUME_CALL tsume_copy_result(void* context, char* output, size_t capacity);
 // Returns bytes required INCLUDING NUL, or -1 on error. A short buffer is untouched.
 // Operations: checks, evasions, moves, can_mate, defenders, exact, solve, line,
-// verify, unmove, dead, node, random, generate, search, forward, futile, final_alt,
-// clear. See README.md for arguments.
+// verify, unmove, dead, node, random, generate, clear. See README.md for arguments.
 TSUME_API int TSUME_CALL tsume_run(void* context, const char* operation,
     const char* sfen, int n, int color, unsigned long long seed,
     int budget, double seconds, char* output, size_t capacity);

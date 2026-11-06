@@ -55,11 +55,50 @@ class _Context:
 
 
 TIMEOUT = 180.0   # 1回の計算の制限時間(秒)。超えると ValueError('timeout')
+_cancelled = False
+
+
+def set_deadline(t):
+    """この呼び出しスレッドの、全体の締め切り（time.time()の値、None=なし）。過ぎたら、以後の計算はすぐ打ち切る。"""
+    _local.deadline = t
+
+
+def cancel(on=True):
+    """実行中の計算を止める（on=False で解除）。別のスレッドから呼んでよい。古いDLLでは、次の呼び出しから止まる。"""
+    global _cancelled
+    _cancelled = bool(on)
+    try:
+        f = _library().tsume_cancel
+        f.argtypes = [ctypes.c_int]
+        f.restype = None
+        f(1 if on else 0)
+    except (AttributeError, RuntimeError, OSError):
+        pass
+
+
+class CancelEvent(threading.Event):
+    """threading.Event と同じ使い方ができる中断フラグ。set() で、実行中のDLLの計算も止める。"""
+    def set(self):
+        super().set()
+        cancel(True)
+
+    def clear(self):
+        super().clear()
+        cancel(False)
 
 
 def _run(op, board=None, n=0, color=0, seed=0, budget=600, seconds=None, text=None):
     if seconds is None:
         seconds = TIMEOUT
+    if _cancelled:
+        raise ValueError("timeout (cancelled)")
+    dl = getattr(_local, "deadline", None)
+    if dl is not None:
+        import time as _t
+        left = dl - _t.time()
+        if left <= 0:
+            raise ValueError("timeout (deadline)")
+        seconds = min(seconds, left)
     if not hasattr(_local, "context"):
         _local.context = _Context()
     ctx = _local.context

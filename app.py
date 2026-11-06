@@ -2842,7 +2842,7 @@ class MainWindow(QMainWindow):
             tsume_verify.CANCEL.set()
             self.btn_kiei.setEnabled(False)
             self.btn_kiei.setText("中断しています…")
-            self.status.setText("中断しています…（いま読んでいる手数の段階が終わると止まります）")
+            self.status.setText("中断しています…（数秒で止まります）")
             return
         sfen = self.cur_board.sfen()
         tsume_verify.CANCEL.clear()

@@ -4,6 +4,7 @@
 #include "tsume.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -316,6 +317,8 @@ struct Pos {
 };
 
 struct Timeout {};
+// 中断用：どのスレッドからでも立てられる。立てると、計算中の探索が次の確認のところで止まる（時間切れと同じ扱い）
+static std::atomic<bool> g_cancel{false};
 struct Solver {
     std::unordered_map<uint64_t,bool> ca,cd,cf;
     // Optional oracle: returns 1 (mate under normal rules), -1 (no mate), 0 (unknown). Used only to prune attacker nodes.
@@ -329,7 +332,7 @@ struct Solver {
     std::string last_output;
     bool timed=false;
     std::chrono::steady_clock::time_point deadline;
-    void tick(){if(timed&&std::chrono::steady_clock::now()>=deadline)throw Timeout{};}
+    void tick(){if(timed&&(g_cancel.load(std::memory_order_relaxed)||std::chrono::steady_clock::now()>=deadline))throw Timeout{};}
     void clear(){ca.clear();cd.clear();cf.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}
     std::unordered_map<uint64_t,Move> chint,dhint;   // move-ordering hints (do not affect results)
     bool hints_on=false;
@@ -725,6 +728,7 @@ std::string run(Solver& s,const std::string& op,const std::string& text,int n,in
     catch(...){s.timed=false;throw;}
 }
 }
+void TSUME_CALL tsume_cancel(int on){g_cancel.store(on!=0);}
 void TSUME_CALL tsume_set_oracle(void* p,int (TSUME_CALL *fn)(const char*)){if(p)static_cast<Solver*>(p)->oracle=fn;}
 void* TSUME_CALL tsume_create(){try{return new Solver;}catch(...){return nullptr;}}
 void TSUME_CALL tsume_destroy(void* p){delete static_cast<Solver*>(p);}

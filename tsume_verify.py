@@ -146,7 +146,7 @@ def tree(sfen, first_moves, total, out=print, fmt=None):
 
 import time as _time
 import threading as _threading
-CANCEL = _threading.Event()      # 立てると、solve_first が次の手数の段階に進む前に止まる（アプリの「中断」ボタン用）
+CANCEL = T.CancelEvent()      # 立てると、solve_first が次の手数の段階に進む前に止まる（アプリの「中断」ボタン用）
 
 
 class _Timeout(Exception):
@@ -761,6 +761,7 @@ def solve_first(sfen, time_limit=150, max_n=31):
         return res
     old = T.TIMEOUT
     deadline = t0 + time_limit
+    T.set_deadline(deadline + 90)      # 手順の組み立てなども含め、これを過ぎたら何をしていても打ち切る
     try:
         N = None
         fallback = []
@@ -804,6 +805,9 @@ def solve_first(sfen, time_limit=150, max_n=31):
             except ValueError as e:
                 if "timeout" not in str(e):
                     raise
+                if CANCEL.is_set():
+                    res["state"] = "skip"; res["msg"] = f"中断しました（{res['upto']}手までは詰まないことを確認しました）。"
+                    return res
                 res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
                 return res
             res["upto"] = n
@@ -817,6 +821,9 @@ def solve_first(sfen, time_limit=150, max_n=31):
         except ValueError as e:
             if "timeout" not in str(e):
                 raise
+            if CANCEL.is_set():
+                res["state"] = "skip"; res["msg"] = f"中断しました（{res['upto']}手までは詰まないことを確認しました）。"
+                return res
             # 他の初手（余詰）まで全部確かめるのは時間がかかる。詰む初手は1つ分かっているので、それで先へ進む。
             wins = list(fallback)
             res["msg"] = "他の初手（余詰）の有無は、時間がかかるため確認していません。"
@@ -839,6 +846,9 @@ def solve_first(sfen, time_limit=150, max_n=31):
         res["N"], res["firsts"] = N, wins
         info = {}
         res["pv"] = main_line(sfen, [wins[0]], N, pv_deadline, info)
+        if CANCEL.is_set():
+            res["state"] = "skip"; res["msg"] = f"中断しました（{res['upto']}手までは詰まないことを確認しました）。"
+            return res
         if info.get("cut"):
             # 手順を最後まで組み立てられなかった。途中までの手順で検証すると誤解を招くので、手数と初手だけを知らせる。
             res["state"] = "timeout"
@@ -847,11 +857,15 @@ def solve_first(sfen, time_limit=150, max_n=31):
         res["state"] = "ok"
         return res
     except ValueError as e:
+        if "timeout" in str(e) and CANCEL.is_set():
+            res["state"] = "skip"; res["msg"] = f"中断しました（{res['upto']}手までは詰まないことを確認しました）。"
+            return res
         res["state"] = "timeout" if "timeout" in str(e) else "error"
         res["msg"] = (f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
                       if res["state"] == "timeout" else str(e))
         return res
     finally:
+        T.set_deadline(None)
         T.TIMEOUT = old
         res["sec"] = _time.time() - t0
 
