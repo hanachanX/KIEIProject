@@ -781,11 +781,11 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
                 res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
                 return res
             T.TIMEOUT = max(1.0, left)
-            _say(f"{n}手詰めかどうかを読んでいます…（{res['upto']}手までは詰まないことを確認済み）")
+            _say(f"{n}手詰を探索中（{res['upto']}手まで不詰確認）")
             try:
                 if T.can_mate(b, n):
                     N = n
-                    _say(f"{n}手で詰むことを確認しました。もっと短い手数で詰まないかを確かめています…")
+                    _say(f"{n}手詰を確認。短い手数を再確認中")
                     try:      # 詰む初手を、キャッシュが温かいうちに先に1つ取っておく（後の検算でキャッシュが消えるため）
                         fallback = [m.usi() for m in T.solve(b, n)][:1]
                     except ValueError:
@@ -823,7 +823,7 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
         if N is None:
             res["state"] = "nomate"; res["msg"] = f"{max_n}手以内には詰みが見つかりませんでした（不詰、またはもっと長い手数）。"
             return res
-        _say(f"{N}手詰めです。ほかの初手（余詰）がないかを調べています…")
+        _say(f"{N}手詰。余詰を確認中")
         T.TIMEOUT = max(1.0, min(8.0, deadline - _time.time()))
         try:
             wins = attacker_wins(b, N)
@@ -853,7 +853,7 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
                 return res
             res["msg"] = "他の初手（余詰）の有無は、時間がかかるため確認していません。"
         res["N"], res["firsts"] = N, wins
-        _say(f"{N}手詰めの手順を組み立てています…")
+        _say(f"{N}手詰の手順を作成中")
         info = {}
         res["pv"] = main_line(sfen, [wins[0]], N, pv_deadline, info)
         if CANCEL.is_set():

@@ -2863,12 +2863,12 @@ class MainWindow(QMainWindow):
 
         def work():
             t0 = time.time()
-            prog = {"text": "棋慧だけで解いています…", "done": False}
+            prog = {"text": "棋慧で解いています", "done": False}
 
             def ticker():                  # 1秒ごとに、途中経過と経過時間を画面に出す
                 while not prog["done"]:
                     if not tsume_verify.CANCEL.is_set():
-                        self.sig.kiei_prog.emit(f"{prog['text']}（経過{int(time.time() - t0)}秒／最長3分）")
+                        self.sig.kiei_prog.emit(f"{prog['text']}　{int(time.time() - t0)}秒")
                     time.sleep(1.0)
             threading.Thread(target=ticker, daemon=True).start()
             try:
@@ -2882,7 +2882,7 @@ class MainWindow(QMainWindow):
                     pv = []
                 else:
                     pv = list(sv["pv"])
-                    prog["text"] = "手順の変化（玉方の別の受け）を調べています…"
+                    prog["text"] = "変化（玉方の別の受け）を検討中"
                     res = tsume_verify.detail(sfen, pv, time_limit=max(20, 175 - int(time.time() - t0)), fmt=core.move_ja)
                     res["firsts"] = list(sv["firsts"])
                     if sv["pv"]:
