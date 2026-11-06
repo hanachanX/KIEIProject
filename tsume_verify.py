@@ -733,6 +733,7 @@ def solve_first(sfen, time_limit=150, max_n=31):
     deadline = t0 + time_limit
     try:
         N = None
+        fallback = []
         n = 1
         while n <= max_n:
             if CANCEL.is_set():
@@ -746,6 +747,10 @@ def solve_first(sfen, time_limit=150, max_n=31):
             try:
                 if T.can_mate(b, n):
                     N = n
+                    try:      # 詰む初手を、キャッシュが温かいうちに先に1つ取っておく（後の検算でキャッシュが消えるため）
+                        fallback = [m.usi() for m in T.solve(b, n)][:1]
+                    except ValueError:
+                        fallback = []
                     for k in range(1, n, 2):          # もっと短い手数で詰まないか、無駄合の判定を深くして確かめ直す
                         if _time.time() > deadline:
                             break
@@ -761,6 +766,7 @@ def solve_first(sfen, time_limit=150, max_n=31):
                                 ok = _floor_try(lambda: _line_ok(q2, k - 1), secs=3.0, keep=True) if k > 1 else True
                             if ok:
                                 N = k
+                                fallback = list(wl[:1])
                             else:
                                 T.set_floor(0)       # 検算に通らない：元の手数のままにする
                             break
@@ -775,8 +781,16 @@ def solve_first(sfen, time_limit=150, max_n=31):
         if N is None:
             res["state"] = "nomate"; res["msg"] = f"{max_n}手以内には詰みが見つかりませんでした（不詰、またはもっと長い手数）。"
             return res
-        T.TIMEOUT = max(1.0, deadline - _time.time())
-        wins = attacker_wins(b, N)
+        T.TIMEOUT = max(1.0, min(8.0, deadline - _time.time()))
+        try:
+            wins = attacker_wins(b, N)
+        except ValueError as e:
+            if "timeout" not in str(e):
+                raise
+            # 他の初手（余詰）まで全部確かめるのは時間がかかる。詰む初手は1つ分かっているので、それで先へ進む。
+            wins = list(fallback)
+            res["msg"] = "他の初手（余詰）の有無は、時間がかかるため確認していません。"
+        T.TIMEOUT = max(1.0, deadline - _time.time())     # 余詰確認用の短い制限を戻す（手順の組み立てに十分な時間を残す）
         if not wins:
             res["state"] = "error"; res["msg"] = "初手を特定できませんでした。"; return res
         res["N"], res["firsts"] = N, wins
