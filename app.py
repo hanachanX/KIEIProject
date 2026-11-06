@@ -1092,7 +1092,7 @@ class MainWindow(QMainWindow):
         self.sig.gemini.connect(self.on_gemini)
         self.sig.mate.connect(self.on_mate)
         self.sig.verify.connect(self.on_verify)
-        self.sig.kiei_prog.connect(lambda s: self.status.setText(s) if getattr(self, "_kiei_running", False) else None)
+        self.sig.kiei_prog.connect(lambda s: self.status.setText(s) if (getattr(self, "_kiei_running", False) or getattr(self, "_prog_active", False)) else None)
         self.sig.game_prog.connect(self.on_game_prog)
         self.sig.game_done.connect(self.on_game_done)
         self.sig.game_err.connect(self.on_game_err)
@@ -3055,14 +3055,25 @@ class MainWindow(QMainWindow):
         self.status.setText("棋慧エンジンで検証中…（短い問題なら数秒です）")
 
         self.kh_ask_n, self.kh_ask_sec, self.kh_ask_by = 0, 0.0, {}
+        self._prog_active = True
 
         def work():
             use_kh = False
+            t_v0 = time.time()
+            vprog = {"text": "棋慧で検証中", "done": False}
+
+            def v_ticker():                # 1秒ごとに、途中経過と経過時間を画面に出す
+                while not vprog["done"]:
+                    self.sig.kiei_prog.emit(f"{vprog['text']}　{int(time.time() - t_v0)}秒")
+                    time.sleep(1.0)
+            threading.Thread(target=v_ticker, daemon=True).start()
+            tsume_verify.PROGRESS = lambda s: vprog.__setitem__("text", s)
             try:
                 if kind == "line":
                     res = tsume_verify.quick_check(sfen, list(pv), time_limit=120, fmt=core.move_ja)
                     if res.get("state") == "warn" and tsume_kh_repair is not None and self._tsume_path():
                         # 手順に無駄合が見つかった：Komoringに問い合わせて、無駄合を除いた最長の手順に直してみる
+                        vprog["text"] = "無駄合が見つかったため、Komoringで手順を直しています"
                         try:
                             rp = tsume_kh_repair.Repair(tsume_kh_repair.Asker(self._kh_ask), max_asks=600, time_limit=90)
                             rr = rp.run(sfen)
@@ -3088,10 +3099,13 @@ class MainWindow(QMainWindow):
                         except Exception:
                             use_kh = False
                         if use_kh:
+                            vprog["text"] = "30秒で終わらないため、Komoringの助けを借りて検証中"
                             res = tsume_verify.detail(sfen, list(pv), time_limit=150, fmt=core.move_ja)
                             res["sec"] = res.get("sec", 0.0) + 30.0
             except Exception as e:
                 res = {"state": "error", "msg": str(e), "sec": 0.0}
+            vprog["done"] = True
+            tsume_verify.PROGRESS = None
             res["kind"], res["sfen"], res["pv"] = kind, sfen, list(pv)
             res["kh_used"], res["kh_asks"], res["kh_sec"] = use_kh, self.kh_ask_n, self.kh_ask_sec
             res["kh_by"] = {k: list(v) for k, v in self.kh_ask_by.items()}
@@ -3110,6 +3124,7 @@ class MainWindow(QMainWindow):
         self.btn_kiei.setEnabled(True)
         self.btn_kiei.setText("棋慧で解く")
         self._kiei_running = False
+        self._prog_active = False
         tsume_verify.CANCEL.clear()
         same = bool(self.last_mate and self.last_mate[0] == r.get("sfen"))
         if same:

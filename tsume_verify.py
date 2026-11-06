@@ -146,7 +146,17 @@ def tree(sfen, first_moves, total, out=print, fmt=None):
 
 import time as _time
 import threading as _threading
-CANCEL = T.CancelEvent()      # 立てると、solve_first が次の手数の段階に進む前に止まる（アプリの「中断」ボタン用）
+CANCEL = T.CancelEvent()
+PROGRESS = None                # アプリが設定する、途中経過を受け取る関数（文字列を受け取る）。None なら何もしない
+
+
+def _note(text):
+    f = PROGRESS
+    if f is not None:
+        try:
+            f(text)
+        except Exception:
+            pass      # 立てると、solve_first が次の手数の段階に進む前に止まる（アプリの「中断」ボタン用）
 
 
 class _Timeout(Exception):
@@ -288,11 +298,14 @@ def _exact_length(q, L, deadline):
     for m in range(2, L - 1, 2):
         if _time.time() > deadline:
             return None
+        _note(f"手数を確認中（{m + 1}手以内で詰むか）")
         if T.defenders_all_lose(q, m):
             return _shorter(q, m, deadline) + 1
+    _note(f"手数を確認中（{L}手以内で詰むか）")
     if T.defenders_all_lose(q, L - 1):
         return _shorter(q, L - 1, deadline) + 1
     for n in range(L + 2, L + 7, 2):
+        _note(f"手数を確認中（{n}手以内で詰むか）")
         if T.defenders_all_lose(q, n - 1):
             return _shorter(q, n - 1, deadline) + 1
     return None
@@ -528,6 +541,7 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
         bd0 = shogi.Board(sfen)
         for i, u in enumerate(pv[:L]):
             if i % 2 == 1 and u[1] == '*' and N - i > 0:
+                _note(f"{i + 1}手目の合駒が無駄合か確認中")
                 try:
                     if is_futile(bd0, u, N - i):
                         res["kh_futile"].append(_jp(fmt, bd0, u))
@@ -546,12 +560,14 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
         def rep_c(bd, n):
             k = (bd.sfen(), n)
             if k not in _rc:
+                _note(f"変化を検討中（玉方の受け・残り{n}手）")
                 _rc[k] = replies(bd, n)
             return _rc[k]
 
         def wins_c(bd, n):
             k = (bd.sfen(), n)
             if k not in _wc:
+                _note(f"余詰・非限定を確認中（攻め方・残り{n}手）")
                 _wc[k] = attacker_wins(bd, n)
             return _wc[k]
 
@@ -726,6 +742,7 @@ def quick_check(sfen, pv, time_limit=20, fmt=None):
                 # 1つの合駒で時間を使い切らないよう、残り時間を残りの合駒数で割って使う。
                 T.TIMEOUT = max(1.0, (deadline - _time.time()) / max(1, left_n))
                 left_n -= 1
+                _note(f"{i + 1}手目の合駒が無駄合か確認中")
                 try:
                     if is_futile(boards[i], u, L - i - 2 * k):
                         found.append(txt[i]); k += 1
