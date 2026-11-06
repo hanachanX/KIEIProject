@@ -356,7 +356,7 @@ struct Solver {
         return out;
     }
     std::unordered_set<uint64_t> inprog;
-    int fdepth=0,maxDepth=6;
+    int fdepth=0,maxDepth=12;
     // ■無駄合の定義について（この判定は定義の選び方で結果が変わる。詳しくは https://w.atwiki.jp/mudaai/pages/29.html ）
     //  ・棋慧の定義：合駒（打つ合駒・盤上の駒を動かす移動合の両方）を攻め方のどの駒で取ってもよく、
     //    取った合駒は攻め方の持駒として使えないものとして、残りの手数以内に詰むなら無駄合とする。

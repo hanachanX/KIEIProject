@@ -298,14 +298,42 @@ def _exact_length(q, L, deadline):
     return None
 
 
-def main_line(sfen, first_moves, N):
-    """正しい手数 N での手順の一例。玉方は最も長く粘る手(合駒でない手を優先)、攻め方は最初の正解手。"""
+def main_line(sfen, first_moves, N, deadline=None, info=None):
+    """正しい手数 N での手順の一例。玉方は最も長く粘る手(合駒でない手を優先)、攻め方は最初の正解手。
+    deadline（time.time()の値）を過ぎたら、そこまでに組み立てた手順を返す（途中まで）。"""
     b = shogi.Board(sfen)
     for u in first_moves:
         b.push_usi(u)
     out = list(first_moves)
     n = N - len(first_moves)
     while n > 0:
+        if deadline is not None:
+            left = deadline - _time.time()
+            if left <= 0:
+                if info is not None:
+                    info["cut"] = True
+                break
+            T.TIMEOUT = max(1.0, left)
+        try:
+            return _main_line_step(b, out, n, deadline, info)
+        except ValueError as e:
+            if "timeout" not in str(e):
+                raise
+            if info is not None:
+                info["cut"] = True
+            return out
+    return out
+
+
+def _main_line_step(b, out, n, deadline, info=None):
+    while n > 0:
+        if deadline is not None:
+            left = deadline - _time.time()
+            if left <= 0:
+                if info is not None:
+                    info["cut"] = True
+                return out
+            T.TIMEOUT = max(1.0, left)
         rep = replies(b, n)
         valid = [r for r in rep if r[1] != '無駄合' and r[2] is not None]
         if not valid:
@@ -316,6 +344,8 @@ def main_line(sfen, first_moves, N):
         n = pick[2]
         if n <= 0:
             break
+        if deadline is not None:
+            T.TIMEOUT = max(1.0, deadline - _time.time())
         wins = attacker_wins(b, n)
         if not wins:
             break
@@ -791,10 +821,29 @@ def solve_first(sfen, time_limit=150, max_n=31):
             wins = list(fallback)
             res["msg"] = "他の初手（余詰）の有無は、時間がかかるため確認していません。"
         T.TIMEOUT = max(1.0, deadline - _time.time())     # 余詰確認用の短い制限を戻す（手順の組み立てに十分な時間を残す）
+        pv_deadline = max(deadline, _time.time()) + 60     # 手順の組み立てには、探索の制限時間とは別に最大60秒の余裕を使う
         if not wins:
-            res["state"] = "error"; res["msg"] = "初手を特定できませんでした。"; return res
+            T.TIMEOUT = max(1.0, pv_deadline - _time.time())
+            try:
+                wins = [m.usi() for m in T.solve(b, N)][:1]
+            except ValueError as e:
+                if "timeout" not in str(e):
+                    raise
+                wins = []
+            if not wins:
+                res["N"] = N
+                res["state"] = "timeout"
+                res["msg"] = f"{N}手で詰むことは確認できましたが、時間内に初手を特定できませんでした。"
+                return res
+            res["msg"] = "他の初手（余詰）の有無は、時間がかかるため確認していません。"
         res["N"], res["firsts"] = N, wins
-        res["pv"] = main_line(sfen, [wins[0]], N)
+        info = {}
+        res["pv"] = main_line(sfen, [wins[0]], N, pv_deadline, info)
+        if info.get("cut"):
+            # 手順を最後まで組み立てられなかった。途中までの手順で検証すると誤解を招くので、手数と初手だけを知らせる。
+            res["state"] = "timeout"
+            res["msg"] = f"{N}手で詰むことと、詰む初手（{wins[0]}）までは確認できましたが、時間内に手順を最後まで組み立てられませんでした。"
+            return res
         res["state"] = "ok"
         return res
     except ValueError as e:
