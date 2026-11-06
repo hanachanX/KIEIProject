@@ -320,7 +320,8 @@ struct Timeout {};
 // 中断用：どのスレッドからでも立てられる。立てると、計算中の探索が次の確認のところで止まる（時間切れと同じ扱い）
 static std::atomic<bool> g_cancel{false};
 struct Solver {
-    std::unordered_map<uint64_t,bool> ca,cd,cf;
+    std::unordered_map<uint64_t,bool> ca,cd,cf,cb;   // cb: 升ごとの無駄合まとめ判定の結果
+    bool batch_on=true;   // 同じ升の合駒を、玉方の持駒を減らさない一番有利な状態で1回だけ判定する（詰めば、その升の全種類が無駄合）
     // Optional oracle: returns 1 (mate under normal rules), -1 (no mate), 0 (unknown). Used only to prune attacker nodes.
     int (*oracle)(const char*)=nullptr;
     std::unordered_map<uint64_t,int> ost;
@@ -333,7 +334,7 @@ struct Solver {
     bool timed=false;
     std::chrono::steady_clock::time_point deadline;
     void tick(){if(timed&&(g_cancel.load(std::memory_order_relaxed)||std::chrono::steady_clock::now()>=deadline))throw Timeout{};}
-    void clear(){ca.clear();cd.clear();cf.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}
+    void clear(){ca.clear();cd.clear();cf.clear();cb.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}
     std::unordered_map<uint64_t,Move> chint,dhint;   // move-ordering hints (do not affect results)
     bool hints_on=false;
     size_t cache_cap=TSUME_CAP;
@@ -379,15 +380,30 @@ struct Solver {
         try {
             Board q=b;q.push(d);
             // 合駒は、王手をかけている駒（a）だけでなく、攻め方のどの駒で取ってもよい（他の駒で取れば詰む場合も無駄合）　26/11/03
-            for(int from=0;from<81&&!res;++from) {
-                if(q.sq[from]<=0)continue;
-                if(from!=a&&!ALLCAP)continue;
-                for(bool prom:{false,true}) {Move m{from,d.to,0,prom};if(!q.legal(m))continue;
-                    Board r=q;r.push(m);if(!r.check())continue;
-                    if(!wide){if(!has_evasion(r,0)){res=true;break;}}
-                    else {r.remove(0,rem);if(defenders(r,n)){res=true;break;}}
+            // restore=true: 合駒に使った駒を玉方の持駒に戻した（一番有利な）状態で判定する。これで詰めば、どの種類の合駒でも詰むので、その升の全種類が無駄合になる。
+            auto caps=[&](bool restore)->bool{
+                for(int from=0;from<81;++from) {
+                    if(q.sq[from]<=0)continue;
+                    if(from!=a&&!ALLCAP)continue;
+                    for(bool prom:{false,true}) {Move m{from,d.to,0,prom};if(!q.legal(m))continue;
+                        Board r=q;r.push(m);if(!r.check())continue;
+                        if(!wide){if(!has_evasion(r,0))return true;}
+                        else {r.remove(0,rem);if(restore)r.add(1,d.drop);if(defenders(r,n))return true;}
+                    }
+                }
+                return false;
+            };
+            if(wide&&batch_on&&d.from<0) {
+                uint64_t kb=key(b,n)*0x9E3779B97F4A7C15ULL+uint64_t(d.to+1)*7919+13;kb^=kb>>29;
+                auto ib=cb.find(kb);
+                if(ib!=cb.end())res=ib->second;
+                else if(!inprog.count(kb)) {
+                    inprog.insert(kb);bool br=false;
+                    try{br=caps(true);}catch(...){inprog.erase(kb);throw;}
+                    inprog.erase(kb);cb[kb]=br;res=br;
                 }
             }
+            if(!res)res=caps(false);
         } catch(...) {if(wide){inprog.erase(k);--fdepth;}throw;}
         if(wide){inprog.erase(k);--fdepth;}
         cf[k]=res;return res;
@@ -688,6 +704,7 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
         return s.forward(Pos::from(Board::parse(q)),parse_move(m),Pos::from(Board::parse(p)),color)?"1":"0";
     }
     if(op=="oracle_min"){s.oracle_min=n<3?3:n;return "";}
+    if(op=="batch"){s.batch_on=n!=0;s.clear();return "";}
     if(op=="futile_floor"){s.futile_floor=n<0?0:n;s.clear();return "";}
     if(op=="final_alt"){s.final_alt=n!=0;return "";}
     if(op=="oracle_stats")return std::to_string(s.o_calls)+" "+std::to_string(s.o_pruned);
