@@ -214,12 +214,12 @@ struct Board {
     // 結果と並び順は、board_moves(1)の全部をlegal_bmにかけた場合と同じ。
     static bool& evfilter_on(){static bool on=true;return on;}
     void defender_legal_moves(std::vector<Move>& out) const {
-        bool use=false;bool mask[81];
+        bool use=false;bool mask[81];int ap[48];int na=0;int kpos=-1;
         if(evfilter_on()){
             int k=king(1);
             if(k>=0){
-                int a=-1,count=0;
-                for(int s=0;s<81;++s)if(sq[s]>0&&attacks(sq[s],s,k,0)){a=s;++count;}
+                int a=-1,count=0;kpos=k;
+                for(int s=0;s<81;++s)if(sq[s]>0){if(na<48)ap[na++]=s;if(attacks(sq[s],s,k,0)){a=s;++count;}}
                 if(count>=1){
                     use=true;std::fill(mask,mask+81,false);
                     if(count==1){
@@ -241,7 +241,21 @@ struct Board {
             return;
         }
         // 応手になりうる手を、最初から直接作る（全部の手を作って捨てない）。並び順は board_moves と同じ（移動元の升→行き先の升→不成→成）。
-        Move cand[512];int nc=0;
+        Move cand[512];bool sure[512];int nc=0;
+        const bool tab=kingtab_on()&&na<48;
+        bool ksafe[81];
+        if(tab) {   // 玉の移動先ごとに、攻め方の駒の利きが届くかを先に調べる。玉を盤から外した状態で調べる（玉の裏側にも利きが通るため）。他の駒の手を作る前に、必ず元に戻す
+            Board* self=const_cast<Board*>(this);int kvsave=sq[kpos];self->sq[kpos]=0;
+            int kr=kpos/9,kf=kpos%9;
+            for(int dr=-1;dr<=1;++dr)for(int df=-1;df<=1;++df) {
+                if(!dr&&!df)continue;
+                int r=kr+dr,f=kf+df;if(r<0||r>=9||f<0||f>=9)continue;
+                int t=r*9+f;bool hit=false;
+                for(int i=0;i<na;++i){int as=ap[i];if(as==t)continue;if(attacks(std::abs(sq[as]),as,t,0)){hit=true;break;}}
+                ksafe[t]=!hit;
+            }
+            self->sq[kpos]=kvsave;
+        }
         for(int s=0;s<81;++s) {
             if(!sq[s]||color_of(sq[s])!=1)continue;
             int pt=std::abs(sq[s]);
@@ -251,19 +265,24 @@ struct Board {
                     if(!dr&&!df)continue;
                     int r=sr+dr,f=sf+df;if(r<0||r>=9||f<0||f>=9)continue;
                     int t=r*9+f;if(sq[t]&&color_of(sq[t])==1)continue;
+                    if(tab) {   // 攻め方の駒の利きが届く升には動けない。届かなければ、そのまま合法
+                        if(!ksafe[t])continue;
+                        sure[nc]=true;
+                    } else sure[nc]=false;
                     cand[nc++]={s,t,0,false};
                 }
             } else {
                 for(int t=0;t<81;++t) {
                     if(!mask[t]||(sq[t]&&color_of(sq[t])==1))continue;
                     if(!attacks(pt,s,t,1))continue;
-                    cand[nc++]={s,t,0,false};
-                    if(promoted[pt]&&(zone(s,1)||zone(t,1)))cand[nc++]={s,t,0,true};
+                    sure[nc]=false;cand[nc++]={s,t,0,false};
+                    if(promoted[pt]&&(zone(s,1)||zone(t,1))){sure[nc]=false;cand[nc++]={s,t,0,true};}
                 }
             }
         }
-        for(int i=0;i<nc;++i)if(legal_bm(cand[i]))out.push_back(cand[i]);
+        for(int i=0;i<nc;++i)if(sure[i]||legal_bm(cand[i]))out.push_back(cand[i]);
     }
+    static bool& kingtab_on(){static bool on=true;return on;}
     static bool& direct_on(){static bool on=true;return on;}
     bool legal_bm(const Move& m) const {
         if(!m.promotion&&!mobile(std::abs(sq[m.from]),m.to,turn))return false;
@@ -789,6 +808,7 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
     if(op=="evfilter"){Board::evfilter_on()=n!=0;s.clear();return "";}
     if(op=="fastchecks"){Board::fastchecks_on()=n!=0;s.clear();return "";}
     if(op=="direct"){Board::direct_on()=n!=0;s.clear();return "";}
+    if(op=="kingtab"){Board::kingtab_on()=n!=0;s.clear();return "";}
     if(op=="cap"){s.cache_cap=n>0?size_t(n):size_t(TSUME_CAP);return "";}
     if(op=="batch"){s.batch_on=n!=0;s.clear();return "";}
     if(op=="futile_floor"){s.futile_floor=n<0?0:n;return "";}
