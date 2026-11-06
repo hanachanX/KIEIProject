@@ -810,7 +810,7 @@ class SettingsDialog(QDialog):
         self.msec.setRange(0, 86400)
         self.msec.setSpecialValueText("無制限")
         self.msec.setValue(int(cfg.get("mate_sec", 60)))
-        self.msec.setToolTip("「詰みを探す」の制限時間(秒)。0=無制限（停止ボタンで止める）")
+        self.msec.setToolTip("「詰みを探す」「棋慧で解く」の制限時間(秒)。0=無制限（停止ボタンで止める）")
         form.addRow("詰み探索の時間(秒)", self.msec)
         self.lowspec = QCheckBox("低スペックPC（棋慧エンジンのメモリ使用を抑える）")
         self.lowspec.setChecked(bool(cfg.get("low_spec", False)))
@@ -2886,7 +2886,8 @@ class MainWindow(QMainWindow):
                     time.sleep(1.0)
             threading.Thread(target=ticker, daemon=True).start()
             try:
-                sv = tsume_verify.solve_first(sfen, time_limit=150, progress=lambda s: prog.__setitem__("text", s))
+                lim = int(self.cfg.get("mate_sec", 60)) or 86400       # 設定の「詰み探索の時間」（0=無制限）に従う
+                sv = tsume_verify.solve_first(sfen, time_limit=lim, progress=lambda s: prog.__setitem__("text", s))
                 if sv["state"] != "ok":
                     res = {"state": "timeout" if sv["state"] == "timeout" else ("skip" if sv["state"] in ("skip", "nomate") else "error"),
                            "msg": sv["msg"], "sec": 0.0}
