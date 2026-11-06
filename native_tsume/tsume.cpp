@@ -413,6 +413,7 @@ struct Solver {
         put(unsigned(b.turn));
         for(auto& hh:b.hand)for(int p=P;p<K;++p){put(unsigned(hh[p]&255));put(unsigned((hh[p]>>8)&255));}
         for(int i=0;i<4;++i)put((unsigned(n)>>(i*8))&255u);
+        put(unsigned(futile_floor)&255u);   // 判定の深さの設定が違えば結果も違うので、鍵に混ぜる（切り替えても記憶を消さずに済む）
         h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;
     }
     std::vector<Move> checks(const Board& b) {
@@ -556,12 +557,13 @@ struct Solver {
     std::unordered_map<uint64_t,std::vector<DomEntry>> dom[2];
     size_t dom_count=0;
     bool dom_on=true;
-    static uint64_t dom_key(const Board& b,int n) {
+    uint64_t dom_key(const Board& b,int n) {
         uint64_t h=1469598103934665603ULL;
         auto put=[&](unsigned c){h^=(c&255u);h*=1099511628211ULL;};
         for(int v:b.sq)put(unsigned(v+16));
         put(unsigned(b.turn));
         for(int i=0;i<4;++i)put((unsigned(n)>>(i*8))&255u);
+        put(unsigned(futile_floor)&255u);   // 判定の深さの設定が違えば結果も違うので、鍵に混ぜる（切り替えても記憶を消さずに済む）
         h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;
     }
     bool dom_get(int w,const Board& b,int n,bool& res) {
@@ -779,7 +781,7 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
     if(op=="direct"){Board::direct_on()=n!=0;s.clear();return "";}
     if(op=="cap"){s.cache_cap=n>0?size_t(n):size_t(TSUME_CAP);return "";}
     if(op=="batch"){s.batch_on=n!=0;s.clear();return "";}
-    if(op=="futile_floor"){s.futile_floor=n<0?0:n;s.clear();return "";}
+    if(op=="futile_floor"){s.futile_floor=n<0?0:n;return "";}
     if(op=="final_alt"){s.final_alt=n!=0;return "";}
     if(op=="oracle_stats")return std::to_string(s.o_calls)+" "+std::to_string(s.o_pruned);
     Board b=Board::parse(text);
