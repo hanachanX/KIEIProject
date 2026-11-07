@@ -2237,6 +2237,12 @@ class MainWindow(QMainWindow):
             p = _default_tsume_engine()
         return p if p and os.path.exists(p) else ""
 
+    def _oracle_ok(self):
+        """検証中の問い合わせ（棋慧の探索がエンジンに「詰むか」と聞く機能）に使ってよいエンジンか。
+        KomoringHeights系のみ。棋人など他のエンジンは、答えが遅かったり食い違ったりして検証が止まるため使わない。"""
+        p = self._tsume_path()
+        return bool(p) and "komoring" in os.path.basename(p).lower()
+
     def close_tsume_engine(self):
         eng, self.tsume_eng = self.tsume_eng, None
         if eng:
@@ -3251,9 +3257,9 @@ class MainWindow(QMainWindow):
                     hl = rl[1] if (rl and rl[0] == sfen) else None
                     # 制限時間は、設定の「詰み探索の時間」に従う（最低180秒。0=無制限）
                     total = max(180, int(self.cfg.get("mate_sec", 60)) or 86400)
-                    res = tsume_verify.detail(sfen, list(pv), time_limit=(30 if self._tsume_path() else total),
+                    res = tsume_verify.detail(sfen, list(pv), time_limit=(30 if self._oracle_ok() else total),
                                               fmt=core.move_ja, hint_line=hl)
-                    if res.get("state") == "timeout" and self._tsume_path():
+                    if res.get("state") == "timeout" and self._oracle_ok():
                         try:
                             import tsume_native
                             use_kh = bool(tsume_native.set_oracle(self._kh_oracle))
