@@ -213,7 +213,7 @@ struct Board {
     // （玉以外で、行き先が「王手の駒の升」でも「間の升」でもない手）を、重い合法判定の前に捨てる。
     // 結果と並び順は、board_moves(1)の全部をlegal_bmにかけた場合と同じ。
     static bool& evfilter_on(){static bool on=true;return on;}
-    void defender_legal_moves(std::vector<Move>& out) const {
+    void defender_legal_moves(std::vector<Move>& out,int mode=0) const {
         bool use=false;bool mask[81];int ap[48];int na=0;int kpos=-1;
         if(evfilter_on()){
             int k=king(1);
@@ -255,6 +255,15 @@ struct Board {
                 ksafe[t]=!hit;
             }
             self->sq[kpos]=kvsave;
+            if(mode==1) {   // 玉が安全に動ける升が1つでもあれば、それで十分（応手あり）。無ければ何も返さない
+                for(int dr=-1;dr<=1;++dr)for(int df=-1;df<=1;++df) {
+                    if(!dr&&!df)continue;
+                    int r=kr+dr,f=kf+df;if(r<0||r>=9||f<0||f>=9)continue;
+                    int t=r*9+f;if(sq[t]&&color_of(sq[t])==1)continue;
+                    if(ksafe[t]){out.push_back({kpos,t,0,false});return;}
+                }
+                return;
+            }
         }
         for(int s=0;s<81;++s) {
             if(!sq[s]||color_of(sq[s])!=1)continue;
@@ -647,6 +656,11 @@ struct Solver {
         }
         std::vector<std::pair<size_t,Move>> scored;
         for(auto m:checks(b)) {Board q=b;q.push(m);
+            if(n<3) {   // 残り1手：応手の数は並べ替えに使わないので、数えない。玉が安全に逃げられる手が1つでもあれば詰みではない
+                if(q.turn==1){std::vector<Move> t;q.defender_legal_moves(t,1);if(t.size()==1&&std::abs(q.sq[t[0].from])==K)continue;}
+                if(!has_evasion(q,n-1))return ca[k]=true;
+                continue;
+            }
             size_t nb=0;if(q.turn==1){std::vector<Move> tmp;q.defender_legal_moves(tmp);nb=tmp.size();}else{for(auto e:q.board_moves(1))if(q.legal(e))++nb;}
             if(nb==0){auto ev=evasions(q,n-1);
                 if(ev.empty()){if(hints_on&&n>=3)chint[key(b,0)]=m;return ca[k]=true;}scored.push_back({ev.size(),m});}
