@@ -810,7 +810,7 @@ class SettingsDialog(QDialog):
         self.msec.setRange(0, 86400)
         self.msec.setSpecialValueText("無制限")
         self.msec.setValue(int(cfg.get("mate_sec", 60)))
-        self.msec.setToolTip("「詰みを探す」「棋慧で解く」の制限時間(秒)。0=無制限（停止ボタンで止める）")
+        self.msec.setToolTip("「詰みを探す」「棋慧で解く」「詳細検討」の制限時間(秒)（詳細検討は最低180秒）。0=無制限（停止ボタンで止める）")
         form.addRow("詰み探索の時間(秒)", self.msec)
         self.lowspec = QCheckBox("低スペックPC（棋慧エンジンのメモリ使用を抑える）")
         self.lowspec.setChecked(bool(cfg.get("low_spec", False)))
@@ -3229,6 +3229,7 @@ class MainWindow(QMainWindow):
                             self._cur_repair = rp
                             rr = rp.run(sfen)
                             if rr.get("state") == "mate" and rr.get("line"):
+                                self.last_repair_line = (sfen, list(rr["line"]))      # 詳細検討が、先に試す手として使う
                                 res["repair"] = {
                                     "n": rr["n"], "line": list(rr["line"]), "changed": bool(rr.get("changed")),
                                     "asks": rr["asks"], "sec": rr["sec"], "ask_sec": rp.ask.sec,
@@ -3242,7 +3243,12 @@ class MainWindow(QMainWindow):
                             res["repair_msg"] = f"手順を直す途中で止まりました：{e}"
                 else:
                     # まず棋慧だけで解く（短い問題はこれが最速）。30秒で終わらなければKomoringの助けを借りる
-                    res = tsume_verify.detail(sfen, list(pv), time_limit=30, fmt=core.move_ja)
+                    rl = getattr(self, "last_repair_line", None)
+                    hl = rl[1] if (rl and rl[0] == sfen) else None
+                    # 制限時間は、設定の「詰み探索の時間」に従う（最低180秒。0=無制限）
+                    total = max(180, int(self.cfg.get("mate_sec", 60)) or 86400)
+                    res = tsume_verify.detail(sfen, list(pv), time_limit=(30 if self._tsume_path() else total),
+                                              fmt=core.move_ja, hint_line=hl)
                     if res.get("state") == "timeout" and self._tsume_path():
                         try:
                             import tsume_native
@@ -3251,7 +3257,7 @@ class MainWindow(QMainWindow):
                             use_kh = False
                         if use_kh:
                             vprog["text"] = "30秒で終わらないため、詰将棋エンジンの助けを借りて検証中"
-                            res = tsume_verify.detail(sfen, list(pv), time_limit=150, fmt=core.move_ja)
+                            res = tsume_verify.detail(sfen, list(pv), time_limit=total - 30, fmt=core.move_ja, hint_line=hl)
                             res["sec"] = res.get("sec", 0.0) + 30.0
             except Exception as e:
                 res = {"state": "error", "msg": str(e), "sec": 0.0}

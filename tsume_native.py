@@ -303,3 +303,12 @@ def prime_hints(sfen, seconds=20.0):
     except ValueError:
         return False
     return r.startswith("M")
+
+
+def hint_line(sfen, moves):
+    """手順（USIの手のリスト）の攻め方の手を、精密な探索が先に試す手として登録する（結果は変わらず、読む順番だけが良くなる）。
+    登録できた手数を返す。古いDLLのときは 0。"""
+    try:
+        return int(_run("hintline", text=sfen + "\n" + " ".join(moves)))
+    except ValueError:
+        return 0

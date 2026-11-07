@@ -1065,6 +1065,13 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
         auto sep=text.find('\n');if(sep==std::string::npos||n<0||n>=81)throw std::invalid_argument("Invalid futile arguments");
         return s.futile(b,parse_move(text.substr(sep+1)),n,budget)?"1":"0";
     }
+    if(op=="hintline") {   // 手順（USIの手を空白で区切る）の攻め方の手を、精密な探索が先に試す手として登録する
+        auto sep=text.find('\n');if(sep==std::string::npos)throw std::invalid_argument("Invalid hintline arguments");
+        std::istringstream is(text.substr(sep+1));std::string u;Board c=b;int cnt=0;
+        while(is>>u){Move m=parse_move(u);if(!c.pseudo(m))break;if(c.turn==0){s.chint[s.key(c,0)]=m;++cnt;}c.push(m);}
+        if(cnt>0)s.hints_on=true;
+        return std::to_string(cnt);
+    }
     if(op=="line"||op=="verify") {std::vector<Move> moves;
         bool ok=op=="line"?s.line(b,n,moves):s.verify(b,n,moves);return ok?move_text(moves):"-";}
     Pos p=Pos::from(b);

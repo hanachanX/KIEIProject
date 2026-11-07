@@ -517,7 +517,7 @@ def _gou(text):
     return re.sub(r"[歩香桂銀金角飛]打$", "合", text)
 
 
-def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
+def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
     """「余詰検証」: 手順（本手順）と、変化・非限定・無駄合・合駒の扱いを、普通の手順の書き方で返す。
     返り値: dict(state, N, blocks=[(見出し, 手順文, [注])...], sec, msg)"""
     t0 = _time.time()
@@ -531,6 +531,12 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40):
     T.TIMEOUT = max(1.0, time_limit)
     deadline = _time.time() + time_limit
     try:
+        try:      # 先に試す手を登録して、読む順番を良くする（結果は変わらない）：df-pnで見つけた手順と、直した手順
+            T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
+            if hint_line:
+                T.hint_line(sfen, list(hint_line))
+        except Exception:
+            pass
         q = shogi.Board(sfen); q.push_usi(pv[0])
         N = _exact_length(q, L, deadline)
         if N is None:
