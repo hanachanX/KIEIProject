@@ -320,6 +320,19 @@ def _hand_mask(clf, classes):
     return _hm["m"]
 
 
+def _fold_promoted(p, classes):
+    """持ち駒に成駒は無いので、成駒に似た字（飛が竜に似る等）の確率は、元の駒の字に足す"""
+    p = np.array(p, np.float32)
+    q = p.copy()
+    for i, nm in enumerate(classes):
+        if nm != "other" and nm[1:2] == "+":
+            base = nm[0] + nm[2:]
+            if base in classes:
+                q[classes.index(base)] += p[i]
+                q[i] = 0
+    return q
+
+
 def read_hands(bgr, xs, ys):
     """戻り値: {'s': {'R': 2, ...}, 'g': {...}}, デバッグ用の文字の一覧"""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -338,7 +351,7 @@ def read_hands(bgr, xs, ys):
             p = clf.predict_proba(glyph_feature_from_crop(crop).reshape(1, -1))[0]
             # 持ち駒に出る字だけを候補にする（玉・成駒は持ち駒に無い）。学習では「その他」の字を多めに入れてあるので、
             # 駒の字が「その他」とほぼ同じくらいの確率なら、駒の字と読む
-            p = p * _hand_mask(clf, classes)
+            p = _fold_promoted(p, classes) * _hand_mask(clf, classes)
             p = p / max(1e-9, float(p.sum()))
             k_o = classes.index("other")
             p_o = float(p[k_o])
