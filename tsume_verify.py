@@ -789,8 +789,8 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
         N = None
         fallback = []
         pre = None          # 詰みを確認した直後（記憶が温かいうち）に作っておいた、手順と余詰の確認結果
-        try:      # df-pn（高速チェック）の結果を、精密な探索が先に試す手として登録する（結果は変わらず、読む順番が良くなって速くなる）
-            _say("高速チェック（df-pn）で見当をつけています")
+        try:      # df-pn（詰み問合せ）の結果を、精密な探索が先に試す手として登録する（結果は変わらず、読む順番が良くなって速くなる）
+            _say("詰み問合せ（df-pn）で見当をつけています")
             T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
         except Exception:
             pass

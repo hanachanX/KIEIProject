@@ -922,7 +922,7 @@ class Sig(QObject):
     mate = pyqtSignal(object)
     verify = pyqtSignal(object)
     kiei_prog = pyqtSignal(str)       # 「棋慧で解く」の途中経過（画面下の表示用）
-    quick_done = pyqtSignal(object)   # 「高速チェック」の結果
+    quick_done = pyqtSignal(object)   # 「詰み問合せ」の結果
     game_prog = pyqtSignal(str, int, object)
     game_done = pyqtSignal(str, bool)
     game_err = pyqtSignal(str)
@@ -1237,7 +1237,7 @@ class MainWindow(QMainWindow):
         self.btn_kiei.setToolTip("詰将棋用の外部エンジンを使わず、棋慧だけでこの詰将棋を解きます（短い手数から順に読むので、15手前後までが目安）。"
                                  "最短の手数・初手・変化まで調べます")
         self.btn_kiei.clicked.connect(self.solve_kiei)
-        self.btn_quick = QPushButton("高速チェック")
+        self.btn_quick = QPushButton("詰み問合せ")
         self.btn_quick.setToolTip("df-pn法で「詰むかどうか」をすばやく調べます（15手級で数秒、21手級でも1秒未満が目安）。"
                                   "手順は一例で、最短の手数や無駄合の有無は保証しません。正確に調べたいときは「棋慧で解く」を使います")
         self.btn_quick.clicked.connect(self.quick_check)
@@ -2929,7 +2929,7 @@ class MainWindow(QMainWindow):
         sfen = self.cur_board.sfen()
         lim = float(int(self.cfg.get("mate_sec", 60)) or 600)
         self.btn_quick.setEnabled(False)
-        self.status.setText("高速チェック中…（df-pn法）")
+        self.status.setText("詰み問合せ中…（df-pn法）")
 
         def work():
             t0 = time.time()
@@ -2941,7 +2941,7 @@ class MainWindow(QMainWindow):
                 if "timeout" in m:
                     res = {"state": "timeout", "pv": [], "msg": ""}
                 elif "Unknown operation" in m:
-                    res = {"state": "error", "pv": [], "msg": "この棋慧のDLL(tsume.dll)には高速チェックの機能がありません。新しいDLLに差し替えてください。"}
+                    res = {"state": "error", "pv": [], "msg": "この棋慧のDLL(tsume.dll)には詰み問合せの機能がありません。新しいDLLに差し替えてください。"}
                 else:
                     res = {"state": "error", "pv": [], "msg": m}
             res["sec"] = time.time() - t0
@@ -2968,24 +2968,24 @@ class MainWindow(QMainWindow):
                 line = core.pv_ja(shogi.Board(r["sfen"]), pv, 40)
             except Exception:
                 line = " ".join(pv)
-            self.status.setText(f"高速チェック：詰みあり（{sec:.1f}秒）。手順の一例を「詰み手順を盤へ」で取り込めます")
+            self.status.setText(f"詰み問合せ：詰みあり（{sec:.1f}秒）。手順の一例を「詰み手順を盤へ」で取り込めます")
             QMessageBox.information(
-                self, "高速チェックの結果",
+                self, "詰み問合せの結果",
                 f"詰みがあります（{sec:.1f}秒）。\n\n手順の一例（{len(pv)}手）：\n{line}\n\n"
                 "※df-pn法による簡易な結果です。玉方がなるべく粘る手順を選んでいますが、無駄合を含むため、実際の詰み手数より長く出ることがあります。"
                 "最短の手数・無駄合の有無・変化は調べていません。正確に調べるときは「棋慧で解く」を使ってください。")
         elif st == "nomate":
-            self.status.setText(f"高速チェック：詰みはありません（{sec:.1f}秒）")
-            QMessageBox.information(self, "高速チェックの結果",
-                                    f"この局面に詰みはないようです（{sec:.1f}秒）。\n\n※簡易な判定です。確実にしたいときは「棋慧で解く」を使ってください。")
+            self.status.setText(f"詰み問合せ：詰みは見つかりませんでした（不詰の可能性が高い・{sec:.1f}秒）")
+            QMessageBox.information(self, "詰み問合せの結果",
+                                    f"手数を区切らずに調べましたが、詰みは見つかりませんでした（{sec:.1f}秒）。\n\n※簡易な判定なので、不詰と断定はできません（まれに、詰む問題を見逃すことがあります）。確実にしたいときは「棋慧で解く」を使ってください。")
         elif st == "timeout":
-            self.status.setText("高速チェック：時間切れ")
-            QMessageBox.information(self, "高速チェックの結果", "時間内に結論が出ませんでした（設定の「詰み探索の時間」を延ばすと続けられます）。")
+            self.status.setText("詰み問合せ：時間切れ")
+            QMessageBox.information(self, "詰み問合せの結果", "時間内に結論が出ませんでした（設定の「詰み探索の時間」を延ばすと続けられます）。")
         elif st == "unknown":
-            self.status.setText("高速チェック：結論が出ませんでした")
+            self.status.setText("詰み問合せ：結論が出ませんでした")
         else:
-            self.status.setText("高速チェックでエラー")
-            QMessageBox.warning(self, "高速チェック", r.get("msg") or "エラーが起きました。")
+            self.status.setText("詰み問合せでエラー")
+            QMessageBox.warning(self, "詰み問合せ", r.get("msg") or "エラーが起きました。")
 
     def apply_mate_line(self, verified=False):
         """「詰みを探す」で見つかった手順を、棋譜として盤に取り込む（駒を動かしても消えない）。
