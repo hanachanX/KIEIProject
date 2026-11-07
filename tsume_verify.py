@@ -562,6 +562,7 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
         names = lambda bd, us: " ".join(_jp(fmt, bd, u) for u in us)
 
         vlist = []
+        alts_info = []
         _rc, _wc, _okc = {}, {}, {}
 
         def rep_c(bd, n):
@@ -644,6 +645,19 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
                             return 0 if finish_ok(q, c[2], False) else 1
                         choices = sorted(choices, key=_fin)
                     first = choices[0]
+                    if vidx == -1:          # 本手順の上の玉方の手番：ほかの受けを、詰み手数つきで記録する（変化の一覧用）
+                        try:
+                            items = []
+                            for r_ in rep:
+                                if r_[0] == first[0] or r_[1] == '無駄合' or r_[2] is None:
+                                    continue
+                                items.append({"usi": r_[0], "label": _jp(fmt, b, r_[0]), "kind": r_[1],
+                                              "rest": r_[2], "total": len(path) + 1 + r_[2]})
+                            alts_info.append({"ply": len(path) + 1, "prefix": list(path), "main": first[0],
+                                              "main_label": _jp(fmt, b, first[0]), "main_total": len(path) + 1 + first[2],
+                                              "items": items, "futile": [_jp(fmt, b, u_) for u_ in futile]})
+                        except Exception:
+                            pass
                     for alt in choices[1:]:
                         if len(blocks) >= max_blocks:
                             break
@@ -704,6 +718,7 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
                 first = v["moves"][0]
             v["label"] = f"変化 {v['from']}手目 {first}…（{len(v['prefix']) + len(v['moves'])}手）"
         res["main_usi"] = list(main_path)
+        res["alts"] = alts_info
         res["game"] = {"sfen": sfen, "moves": list(main_path), "comments": {}, "variations": vlist}
         return res
     except ValueError as e:
@@ -713,6 +728,40 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
     finally:
         T.TIMEOUT = old
         res["sec"] = _time.time() - t0
+
+
+def alt_line(sfen, prefix, usi, total, time_limit=30, fmt=None):
+    """本手順の途中で玉方が別の受け usi を指したとき、詰みまでの手順の一例を日本語で返す。
+    prefix: そこまでの本手順（玉方の手の直前まで）。total: その受けでの全手数。返り値: (文, 途中で打ち切ったか)"""
+    old = T.TIMEOUT
+    T.TIMEOUT = max(1.0, time_limit)
+    try:
+        info = {}
+        base = list(prefix) + [usi]
+        bq = shogi.Board(sfen)
+        for u in base:
+            bq.push_usi(u)
+        rem = total - len(base)
+        if rem <= 0:
+            line = base
+        else:
+            wins = attacker_wins(bq, rem)
+            if not wins:
+                line = base
+                info["cut"] = True
+            else:
+                line = main_line(sfen, base + [wins[0]], total, deadline=_time.time() + time_limit, info=info)
+        bd = shogi.Board(sfen)
+        for u in prefix:
+            bd.push_usi(u)
+        out = []
+        for u in line[len(prefix):]:
+            out.append(ja_move(bd, u)); bd.push_usi(u)
+        cut = bool(info.get("cut"))
+        txt = " ".join(out) + ("" if cut else f"　まで{total}手")
+        return txt, cut
+    finally:
+        T.TIMEOUT = old
 
 
 def quick_check(sfen, pv, time_limit=20, fmt=None):

@@ -921,6 +921,7 @@ class Sig(QObject):
     shot_err = pyqtSignal(str)
     mate = pyqtSignal(object)
     verify = pyqtSignal(object)
+    alt_line_done = pyqtSignal(object)   # 変化の一覧：手順を展開した結果
     kiei_prog = pyqtSignal(str)       # 「棋慧で解く」の途中経過（画面下の表示用）
     quick_done = pyqtSignal(object)   # 「詰み問合せ」の結果
     game_prog = pyqtSignal(str, int, object)
@@ -1108,6 +1109,7 @@ class MainWindow(QMainWindow):
         self.sig.mate.connect(self.on_mate)
         self.sig.verify.connect(self.on_verify)
         self.sig.quick_done.connect(self.on_quick_done)
+        self.sig.alt_line_done.connect(self.on_alt_line_done)
         self.sig.kiei_prog.connect(lambda s: self.status.setText(s) if (getattr(self, "_kiei_running", False) or getattr(self, "_prog_active", False)) else None)
         self.sig.game_prog.connect(self.on_game_prog)
         self.sig.game_done.connect(self.on_game_done)
@@ -1372,8 +1374,10 @@ class MainWindow(QMainWindow):
         row2.addWidget(more)
         rv.addLayout(row2)
 
-        self.result = QTextEdit()
-        self.result.setReadOnly(True)
+        self.result = QTextBrowser()
+        self.result.setOpenLinks(False)
+        self.result.setOpenExternalLinks(False)
+        self.result.anchorClicked.connect(self.on_result_link)
         self.result.setPlaceholderText("ここに解説が出ます")
         # 全局の結果（悪手・好手の一覧と講評）は別のタブに置き、局面を動かしても消えないようにする
         self.summary = QTextBrowser()
@@ -2236,12 +2240,6 @@ class MainWindow(QMainWindow):
         if p is None:
             p = _default_tsume_engine()
         return p if p and os.path.exists(p) else ""
-
-    def _oracle_ok(self):
-        """検証中の問い合わせ（棋慧の探索がエンジンに「詰むか」と聞く機能）に使ってよいエンジンか。
-        KomoringHeights系のみ。棋人など他のエンジンは、答えが遅かったり食い違ったりして検証が止まるため使わない。"""
-        p = self._tsume_path()
-        return bool(p) and "komoring" in os.path.basename(p).lower()
 
     def close_tsume_engine(self):
         eng, self.tsume_eng = self.tsume_eng, None
@@ -3257,9 +3255,9 @@ class MainWindow(QMainWindow):
                     hl = rl[1] if (rl and rl[0] == sfen) else None
                     # 制限時間は、設定の「詰み探索の時間」に従う（最低180秒。0=無制限）
                     total = max(180, int(self.cfg.get("mate_sec", 60)) or 86400)
-                    res = tsume_verify.detail(sfen, list(pv), time_limit=(30 if self._oracle_ok() else total),
+                    res = tsume_verify.detail(sfen, list(pv), time_limit=(30 if self._tsume_path() else total),
                                               fmt=core.move_ja, hint_line=hl)
-                    if res.get("state") == "timeout" and self._oracle_ok():
+                    if res.get("state") == "timeout" and self._tsume_path():
                         try:
                             import tsume_native
                             use_kh = bool(tsume_native.set_oracle(self._kh_oracle))
@@ -3380,6 +3378,8 @@ class MainWindow(QMainWindow):
                 h.append(f"<h4>{esc(ttl)}</h4><p><b>{esc(text)}</b></p>")
                 for n in notes:
                     h.append(f"<p>※{esc(n)}</p>")
+            if r.get("alts") and st in ("ok", "warn"):
+                h.append("<!--ALTS-->")
             if by_kiei:
                 fs = r.get("firsts") or []
                 if len(fs) > 1:
@@ -3417,10 +3417,125 @@ class MainWindow(QMainWindow):
                 self.btn_mate_apply.setEnabled(True)
             if r["game"].get("variations"):
                 h.append("<p>「検証済み手順を盤へ」を押すと、変化も分岐棋譜として盤に取り込めます（「変化」の選択欄から切り替え）。</p>")
-        self.result.setHtml("".join(h))
+        self._vr = None
+        if r.get("alts"):
+            self._vr = {"base": "".join(h), "alts": r["alts"], "sfen": r["sfen"], "total": r.get("N"),
+                        "open": set(), "lines": {}, "fmt": None}
+            self._render_verify()
+        else:
+            self.result.setHtml("".join(h))
         self.mate_report = (self.start_sfen, self.result.toHtml())
         self.tabs.setCurrentWidget(self.result)
         self.status.setText(f"{title}：完了（{sec:.1f}秒）")
+
+    # ---- 変化の一覧（玉方の別の受けと、その詰み手数）----
+    def _alts_html(self):
+        import html as _h
+        esc = lambda t: _h.escape(str(t))
+        vr = self._vr
+        nodes = [a for a in vr["alts"] if a.get("items")]
+        if not nodes:
+            return "<h4>玉方の別の受け</h4><p>本手順の玉方の手番は、どこも受けが1通りだけです（ほかの受けはありません）。</p>"
+        out = ["<h4>玉方の別の受け（変化の一覧）</h4>",
+               "<p>本手順の玉方の手番ごとに、ほかの受けと、その受けだと全部で何手で詰むかを並べています。"
+               "手数が本手順より短い受けは、早く詰んでしまうので、玉方の最善ではありません（不正解）。"
+               " <a href='alt-all:1'>すべて開く</a> ／ <a href='alt-all:0'>すべて閉じる</a></p>"]
+        for i, a in enumerate(nodes):
+            op = i in vr["open"]
+            n = len(a["items"])
+            mt = a["main_total"]
+            out.append(f"<p><a href='alt-toggle:{i}'>{'▼' if op else '▶'} {a['ply']}手目 {esc(a['main_label'])}"
+                       f"（本手順・全{mt}手）のほかの受け　{n}通り</a></p>")
+            if not op:
+                continue
+            rows = {}
+            for it in sorted(a["items"], key=lambda x: (x["total"], x["kind"] == "合駒")):
+                if it["kind"] == "合駒":
+                    rows.setdefault(("g", it["total"]), []).append(it)
+                else:
+                    rows.setdefault(("n", it["total"], it["usi"]), []).append(it)
+            lis = []
+            for k in sorted(rows, key=lambda k: (k[1], k[0] == "g")):
+                its = rows[k]
+                total = k[1]
+                names = [x["label"] for x in its]
+                head = "・".join(names[:4]) + (f" ほか{len(names) - 4}種" if len(names) > 4 else "")
+                if total < mt:
+                    tag = f"<span style='color:#d32f2f'>本手順より{mt - total}手早く詰む</span>"
+                elif total == mt:
+                    tag = "本手順と同じ手数（変同）"
+                else:
+                    tag = f"本手順より{total - mt}手長い"
+                key = f"{i}:{its[0]['usi']}"
+                ln = vr["lines"].get(key)
+                if ln is None:
+                    act = f" <a href='alt-line:{key}'>[手順を見る]</a>"
+                    body = ""
+                elif ln == "...":
+                    act = " （手順を調べています…）"
+                    body = ""
+                else:
+                    act = ""
+                    body = f"<br><span style='color:#555'>　{esc(ln)}</span>"
+                lis.append(f"<li>{esc(head)} → 全{total}手で詰み（{tag}）{act}{body}</li>")
+            out.append("<ul>" + "".join(lis) + "</ul>")
+            if a.get("futile"):
+                out.append("<p style='color:#777'>※無駄合になるため除いた受け： " + esc(" ".join(a["futile"][:8])) + (" ほか" if len(a["futile"]) > 8 else "") + "</p>")
+        return "".join(out)
+
+    def _render_verify(self):
+        vr = getattr(self, "_vr", None)
+        if not vr:
+            return
+        sb = self.result.verticalScrollBar()
+        pos = sb.value()
+        self.result.setHtml(vr["base"].replace("<!--ALTS-->", self._alts_html()))
+        sb.setValue(pos)
+
+    def on_result_link(self, url):
+        s = url.toString()
+        vr = getattr(self, "_vr", None)
+        if not vr or not s.startswith("alt-"):
+            return
+        if not (self.last_mate and self.last_mate[0] == vr["sfen"]):
+            return
+        kind, _, arg = s.partition(":")
+        nodes = [a for a in vr["alts"] if a.get("items")]
+        if kind == "alt-toggle":
+            i = int(arg)
+            vr["open"].symmetric_difference_update({i})
+        elif kind == "alt-all":
+            vr["open"] = set(range(len(nodes))) if arg == "1" else set()
+        elif kind == "alt-line":
+            i_s, _, usi = arg.partition(":")
+            key = f"{i_s}:{usi}"
+            if key in vr["lines"]:
+                return
+            a = nodes[int(i_s)]
+            it = next((x for x in a["items"] if x["usi"] == usi), None)
+            if it is None:
+                return
+            vr["lines"][key] = "..."
+            sfen, prefix, total = vr["sfen"], list(a["prefix"]), it["total"]
+
+            def work():
+                try:
+                    txt, cut = tsume_verify.alt_line(sfen, prefix, usi, total, time_limit=30)
+                    if cut:
+                        txt += "（途中まで）"
+                except Exception as e:
+                    txt = f"（手順を出せませんでした：{e}）"
+                self.sig.alt_line_done.emit((sfen, key, txt))
+            threading.Thread(target=work, daemon=True).start()
+        self._render_verify()
+
+    def on_alt_line_done(self, d):
+        sfen, key, txt = d
+        vr = getattr(self, "_vr", None)
+        if not vr or vr["sfen"] != sfen:
+            return
+        vr["lines"][key] = txt
+        self._render_verify()
 
     def show_result(self, md):
         """この局面の解説の欄に出す（全局の結果は別のタブに残る）。"""
