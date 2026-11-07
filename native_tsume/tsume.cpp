@@ -604,6 +604,222 @@ struct Solver {
     size_t dom_count=0;
     bool dom_on=true;
     Key128 dom_key(const Board& b,int n) {return hashboard(b,n,false);}
+    struct DP{uint64_t pn,dn;};
+    struct DEnt{uint8_t a[7],d[7];uint64_t pn,dn;};
+    std::unordered_map<Key128,std::vector<DEnt>,KH> dpt;
+    std::unordered_set<Key128,KH> dpath;
+    long long dp_nodes=0,dp_ent=0;
+    int dp_prune=1;      // 合駒の静的な絞り込み
+    int dp_chain=1;      // 合駒を鎖にまとめる
+    static constexpr uint64_t DINF=(1ULL<<40);
+    static void dp_hands(const Board& b,uint8_t* a,uint8_t* d){for(int i=0;i<7;++i){a[i]=(uint8_t)std::min(255,b.hand[0][i+1]);d[i]=(uint8_t)std::min(255,b.hand[1][i+1]);}}
+    bool dp_look(const Board& b,DP& out,bool& exact) {
+        exact=false;auto it=dpt.find(dom_key(b,0));if(it==dpt.end())return false;
+        uint8_t a[7],d[7];dp_hands(b,a,d);
+        for(auto& e:it->second){
+            bool same=true;for(int i=0;i<7&&same;++i)same=(e.a[i]==a[i]&&e.d[i]==d[i]);
+            if(same){out=DP{e.pn,e.dn};exact=true;return true;}
+        }
+        for(auto& e:it->second){
+            if(e.pn==0){bool ok=true;for(int i=0;i<7&&ok;++i)ok=e.a[i]<=a[i]&&e.d[i]>=d[i];if(ok){out=DP{0,DINF};return true;}}
+            else if(e.dn==0){bool ok=true;for(int i=0;i<7&&ok;++i)ok=a[i]<=e.a[i]&&d[i]>=e.d[i];if(ok){out=DP{DINF,0};return true;}}
+        }
+        return false;
+    }
+    DP dp_get(const Board& b){DP r;bool ex;if(dp_look(b,r,ex))return r;return DP{1,1};}
+    void dp_put(const Board& b,uint64_t pn,uint64_t dn) {
+        auto& v=dpt[dom_key(b,0)];uint8_t a[7],d[7];dp_hands(b,a,d);
+        for(auto& e:v){bool same=true;for(int i=0;i<7&&same;++i)same=(e.a[i]==a[i]&&e.d[i]==d[i]);if(same){e.pn=pn;e.dn=dn;return;}}
+        DEnt e;for(int i=0;i<7;++i){e.a[i]=a[i];e.d[i]=d[i];}e.pn=pn;e.dn=dn;
+        if(v.size()>=16){size_t k=0;for(size_t i=0;i<v.size();++i)if(v[i].pn&&v[i].dn){k=i;break;}v.erase(v.begin()+k);--dp_ent;}
+        v.push_back(e);++dp_ent;
+    }
+    struct DItem{Move m;Board q;std::vector<Move> rest;};
+    // 玉方の局面で、玉の隣以外の升に合駒をする意味があるか（升に玉方の駒の利きがあるか）
+    bool dp_support(const Board& b,int to,int movedfrom){
+        for(int s=0;s<81;++s){int p=b.sq[s];if(p<0&&s!=movedfrom&&std::abs(p)!=K&&b.attacks(p,s,to,0))return true;}
+        return false;
+    }
+    void dp_items(const Board& b,std::vector<DItem>& items,int bud=-1) {
+        std::vector<Move> mv;
+        if(b.turn==0){mv=checks(b);for(auto&m:mv){DItem it;it.m=m;it.q=b;it.q.push(m);items.push_back(std::move(it));}return;}
+        std::vector<Move> normal,drops;int att;evasions_split(b,normal,drops,att);
+        for(auto&m:normal){DItem it;it.m=m;it.q=b;it.q.push(m);items.push_back(std::move(it));}
+        if(drops.empty())return;
+        int k=b.king(1);
+        std::vector<Move> dchain,mchain;
+        for(auto&m:drops){
+            if(bud>=0&&futile(b,m,att,bud))continue;   // 棋慧の厳密な無駄合の判定（残り手数 bud で判定）
+            if(bud<0&&dp_prune&&normal.empty()){
+                int dr=m.to/9-k/9,df=m.to%9-k%9;int dist=std::max(std::abs(dr),std::abs(df));
+                if(dist>=2&&!dp_support(b,m.to,m.from))continue;   // 隣以外で、取り返す駒が無い升への合駒は無駄合として落とす
+            }
+            if(m.from<0)dchain.push_back(m);else mchain.push_back(m);
+        }
+        auto addchain=[&](std::vector<Move>& ch){
+            if(ch.empty())return;
+            if(!dp_chain){for(auto&m:ch){DItem it;it.m=m;it.q=b;it.q.push(m);items.push_back(std::move(it));}return;}
+            DItem it;it.m=ch[0];it.q=b;it.q.push(ch[0]);
+            for(size_t i=1;i<ch.size();++i)it.rest.push_back(ch[i]);
+            items.push_back(std::move(it));
+        };
+        addchain(dchain);addchain(mchain);
+    }
+    void dp_mid(const Board& b,uint64_t thpn,uint64_t thdn,uint64_t& rpn,uint64_t& rdn,int depth) {
+        tick();++dp_nodes;
+        if(dp_ent>dp_cap)throw Timeout{};   // 局面表が大きくなりすぎたら打ち切る（メモリ保護）
+        bool orn=(b.turn==0);
+        std::vector<DItem> items;dp_items(b,items);
+        if(items.empty()){ if(orn){rpn=DINF;rdn=0;}else{rpn=0;rdn=DINF;} dp_put(b,rpn,rdn);return;}
+        if(depth>600){rpn=DINF;rdn=0;return;}
+        Key128 kb=key(b,0);
+        if(orn){for(auto&it:items){DP t;bool ex;if(!dp_look(it.q,t,ex)){
+                std::vector<DItem> sub;dp_items(it.q,sub);
+                if(sub.empty())dp_put(it.q,0,DINF);else dp_put(it.q,(uint64_t)sub.size(),1);}}}
+        dpath.insert(kb);
+        for(;;) {
+            // 鎖の展開：先頭の合駒が詰みと分かったら、次の合駒を別の手として取り出す
+            for(size_t i=0;i<items.size();++i){
+                while(!items[i].rest.empty()){
+                    DP c=dp_get(items[i].q);if(c.pn!=0)break;
+                    DItem nit;nit.m=items[i].rest.front();items[i].rest.erase(items[i].rest.begin());
+                    nit.q=b;nit.q.push(nit.m);
+                    DP c2=dp_get(nit.q);
+                    // 鎖の残りは新しい項目に引き継ぐ
+                    nit.rest.swap(items[i].rest);
+                    items.push_back(std::move(nit));
+                    break;
+                }
+            }
+            uint64_t sumpn=0,sumdn=0,minpn=DINF*4,mindn=DINF*4;
+            uint64_t bk=DINF*4,sec=DINF*4;size_t bi=0;uint64_t bdn_=0;
+            for(size_t i=0;i<items.size();++i) {
+                DP c;
+                if(dpath.count(key(items[i].q,0)))c=DP{DINF,0};
+                else c=dp_get(items[i].q);
+                if(c.pn<minpn)minpn=c.pn; if(c.dn<mindn)mindn=c.dn;
+                sumpn=std::min<uint64_t>(DINF,sumpn+c.pn);sumdn=std::min<uint64_t>(DINF,sumdn+c.dn);
+                uint64_t k1=orn?c.pn:c.dn;
+                if(k1<bk){sec=bk;bk=k1;bi=i;}else if(k1<sec)sec=k1;
+            }
+            (void)bdn_;
+            uint64_t pn,dn;
+            if(orn){pn=minpn;dn=sumdn;}else{pn=sumpn;dn=mindn;}
+            if(pn>=thpn||dn>=thdn||pn==0||dn==0){rpn=pn;rdn=dn;dp_put(b,pn,dn);dpath.erase(kb);return;}
+            DP c=dp_get(items[bi].q);
+            uint64_t cthpn,cthdn;
+            uint64_t sc=(sec>=DINF*4?DINF:sec);
+            if(orn){
+                cthpn=std::min(thpn,sc+1);
+                cthdn=(thdn>=DINF)?DINF:(thdn>dn?thdn-dn+c.dn:c.dn+1);
+            } else {
+                cthdn=std::min(thdn,sc+1);
+                cthpn=(thpn>=DINF)?DINF:(thpn>pn?thpn-pn+c.pn:c.pn+1);
+            }
+            uint64_t cp,cd2;
+            Board q=items[bi].q;
+            dp_mid(q,cthpn,cthdn,cp,cd2,depth+1);
+            dp_put(q,cp,cd2);
+        }
+    }
+    // df-pn の証明木から手順を作る。攻め方は一番短く詰む手、玉方は一番長く粘る受けを選ぶ
+    std::unordered_map<Key128,int,KH> dpl_memo;
+    std::unordered_set<Key128,KH> dpl_path;
+    static constexpr int DPL_INF=1000000;
+    void dp_children(const Board& b,std::vector<std::pair<Move,Board>>& out){
+        std::vector<DItem> items;dp_items(b,items);
+        for(auto&it:items){
+            out.push_back({it.m,it.q});
+            for(auto&r:it.rest){Board q=b;q.push(r);out.push_back({r,q});}
+        }
+    }
+    int dp_len(const Board& b,int depth){
+        Key128 k=key(b,0);
+        auto f=dpl_memo.find(k);if(f!=dpl_memo.end())return f->second;
+        if(depth>400||dpl_path.count(k))return DPL_INF;
+        std::vector<std::pair<Move,Board>> ch;dp_children(b,ch);
+        int best;
+        if(b.turn==0){
+            best=DPL_INF;
+            dpl_path.insert(k);
+            for(auto&c:ch){if(dp_get(c.second).pn!=0)continue;int l=dp_len(c.second,depth+1);if(l<DPL_INF&&l+1<best)best=l+1;}
+            dpl_path.erase(k);
+        } else {
+            if(ch.empty())best=0;
+            else{
+                best=0;dpl_path.insert(k);
+                int cnt=0;for(auto&c:ch){if(dp_get(c.second).pn!=0)continue;int l=dp_len(c.second,depth+1);if(l>=DPL_INF)continue;++cnt;if(l+1>best)best=l+1;}if(!cnt)best=DPL_INF;
+                dpl_path.erase(k);
+            }
+        }
+        dpl_memo[k]=best;return best;
+    }
+    std::vector<Move> dp_pv(Board b) {
+        std::vector<Move> pv;std::unordered_set<Key128,KH> seen;
+        dpl_memo.clear();dpl_path.clear();
+        for(int i=0;i<700;++i){
+            if(!seen.insert(key(b,0)).second)break;
+            std::vector<std::pair<Move,Board>> ch;dp_children(b,ch);
+            if(ch.empty())break;
+            int pick=-1,bl=0;
+            for(size_t j=0;j<ch.size();++j){
+                if(dp_get(ch[j].second).pn!=0)continue;
+                int l=dp_len(ch[j].second,0);if(l>=DPL_INF)continue;
+                if(pick<0||(b.turn==0?l<bl:l>bl)){pick=(int)j;bl=l;}
+            }
+            if(pick<0){   // 長さの計算で選べないときは、証明済みの最初の手を使う
+                for(size_t j=0;j<ch.size();++j)if(dp_get(ch[j].second).pn==0){pick=(int)j;break;}
+            }
+            if(pick<0)break;
+            pv.push_back(ch[pick].first);b.push(ch[pick].first);
+        }
+        dpl_memo.clear();
+        return pv;
+    }
+    // df-pn の証明を、精密な探索の「先に試す手」として登録する（結果は変わらず、読む順番だけが良くなる）
+    std::unordered_set<Key128,KH> dp_vis;
+    long long dp_hints=0;
+    void dp_fill(const Board& b,int depth) {
+        if(depth>300)return;
+        Key128 kb=key(b,0);if(!dp_vis.insert(kb).second)return;
+        std::vector<std::pair<Move,Board>> ch;dp_children(b,ch);
+        if(b.turn==0){
+            int pick=-1,bl=0;
+            for(size_t j=0;j<ch.size();++j){
+                if(dp_get(ch[j].second).pn!=0)continue;
+                int l=dp_len(ch[j].second,0);if(l>=DPL_INF)continue;
+                if(pick<0||l<bl){pick=(int)j;bl=l;}
+            }
+            if(pick>=0){chint[kb]=ch[pick].first;++dp_hints;dp_fill(ch[pick].second,depth+1);}
+        } else {
+            for(auto&c:ch)if(dp_get(c.second).pn==0)dp_fill(c.second,depth+1);
+        }
+    }
+    std::string dfpn_prime(const Board& b) {
+        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;
+        uint64_t pn,dn;
+        try{dp_mid(b,DINF,DINF,pn,dn,0);}catch(...){dpt.clear();dpath.clear();throw;}
+        std::string r="U";
+        if(pn==0){
+            dpl_memo.clear();dpl_path.clear();dp_vis.clear();dp_hints=0;
+            dp_fill(b,0);hints_on=true;
+            r="M "+std::to_string(dp_hints);
+        } else if(dn==0)r="N";
+        dpt.clear();dpath.clear();dpl_memo.clear();dp_vis.clear();
+        return r;
+    }
+    long long dp_cap=15000000;
+    std::string dfpn_quick(const Board& b) {
+        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;
+        uint64_t pn,dn;
+        try{dp_mid(b,DINF,DINF,pn,dn,0);}catch(...){dpt.clear();dpath.clear();throw;}
+        std::string r;
+        if(pn==0){auto pv=dp_pv(b);r="M "+std::to_string(pv.size())+" "+[&]{std::string o;for(auto m:pv){if(!o.empty())o+=' ';o+=m.usi();}return o;}();}
+        else if(dn==0)r="N";else r="U";
+        dpt.clear();dpath.clear();
+        return r;
+    }
+
     bool dom_get(int w,const Board& b,int n,bool& res) {
         if(!dom_on)return false;
         auto it=dom[w].find(dom_key(b,0));if(it==dom[w].end())return false;
@@ -833,6 +1049,9 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
     if(op=="checks")return move_text(s.checks(b));
     if(op=="evasions")return move_text(s.evasions(b));
     if(op=="moves")return move_text(b.board_moves(color));
+    if(op=="dfpn")return s.dfpn_quick(b);
+    if(op=="prime")return s.dfpn_prime(b);
+    if(op=="hints_off"){s.hints_on=false;s.chint.clear();s.dhint.clear();return "";}
     if(op=="can_mate")return s.mate(b,n)?"1":"0";
     if(op=="defenders")return s.defenders(b,n)?"1":"0";
     if(op=="exact")return s.exact(b,n)?"1":"0";

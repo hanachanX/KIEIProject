@@ -282,3 +282,24 @@ def oracle_stats():
         return int(a), int(b)
     except Exception:
         return 0, 0
+
+
+def quick_mate(sfen, seconds=60.0):
+    """df-pn による高速チェック。詰みの有無と、手順の一例を返す（最短・正確な手数は保証しない）。
+    戻り値: ("mate", [USI...]) / ("nomate", []) / ("unknown", [])。時間切れは ValueError('timeout')。
+    古いDLLには無い機能なので、その場合は ValueError('Unknown operation') になる。"""
+    r = _run("dfpn", text=sfen, seconds=seconds)
+    if r.startswith("M"):
+        parts = r.split()
+        return "mate", parts[2:]
+    return ("nomate" if r.startswith("N") else "unknown"), []
+
+
+def prime_hints(sfen, seconds=20.0):
+    """df-pn(高速チェック)で詰みを見つけ、その手を「先に試す手」として登録する。精密な探索の結果は変わらず、読む順番だけが良くなる。
+    成功したら True。時間切れ・古いDLL・詰みが見つからないときは False（そのまま従来どおり探索できる）。"""
+    try:
+        r = _run("prime", text=sfen, seconds=seconds)
+    except ValueError:
+        return False
+    return r.startswith("M")
