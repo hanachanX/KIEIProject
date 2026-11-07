@@ -3230,12 +3230,16 @@ class MainWindow(QMainWindow):
                             rr = rp.run(sfen)
                             if rr.get("state") == "mate" and rr.get("line"):
                                 self.last_repair_line = (sfen, list(rr["line"]))      # 詳細検討が、先に試す手として使う
+                                vprog["text"] = "直した手順を、棋慧のエンジンで確認しています"
+                                _tc = time.time()
+                                _chk = tsume_kh_repair.check(sfen, rr["line"])
+                                _chk_sec = time.time() - _tc
                                 res["repair"] = {
                                     "n": rr["n"], "line": list(rr["line"]), "changed": bool(rr.get("changed")),
                                     "asks": rr["asks"], "sec": rr["sec"], "ask_sec": rp.ask.sec,
                                     "by": {k: list(v) for k, v in rp.ask.by_state.items()},
                                     "incomplete": list(rr.get("incomplete", [])),
-                                    "check": tsume_kh_repair.check(sfen, rr["line"]),
+                                    "check": _chk, "check_sec": _chk_sec,
                                 }
                             else:
                                 res["repair_msg"] = "詰将棋エンジンへの問い合わせでは、手順を直せませんでした。"
@@ -3267,6 +3271,7 @@ class MainWindow(QMainWindow):
             if tsume_verify.CANCEL.is_set() and res.get("state") in ("timeout", "error", "warn", "ok"):
                 res = {"state": "skip", "msg": "中断しました。", "sec": time.time() - t_v0}
             res["kind"], res["sfen"], res["pv"] = kind, sfen, list(pv)
+            res["total_sec"] = time.time() - t_v0
             res["kh_used"], res["kh_asks"], res["kh_sec"] = use_kh, self.kh_ask_n, self.kh_ask_sec
             res["kh_by"] = {k: list(v) for k, v in self.kh_ask_by.items()}
             try:
@@ -3383,6 +3388,11 @@ class MainWindow(QMainWindow):
             else:
                 h.append("<p>初手は詰将棋エンジンの手を前提にしています（初手の余詰は調べていません）。</p>")
         h.append(f"<p>棋慧エンジンの考慮時間：{sec:.1f}秒</p>")
+        _rp = r.get("repair")
+        if _rp:
+            h.append(f"<p>（手順の組み直し：{_rp['sec']:.1f}秒　直した手順の最終確認：{_rp.get('check_sec', 0.0):.1f}秒）</p>")
+        if r.get("total_sec"):
+            h.append(f"<p>全体の所要時間：{r['total_sec']:.1f}秒</p>")
         if r.get("kh_used"):
             by = r.get("kh_by", {})
             names = {"mate": "詰み", "nomate": "不詰", "other": "時間切れ等"}
