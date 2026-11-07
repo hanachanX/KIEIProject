@@ -3,6 +3,7 @@
 import json
 import os
 import queue
+import subprocess
 from datetime import datetime
 import sys
 import threading
@@ -2241,6 +2242,73 @@ class MainWindow(QMainWindow):
             p = _default_tsume_engine()
         return p if p and os.path.exists(p) else ""
 
+    def _oracle_ok(self):
+        """検証中の問い合わせ（棋慧の探索がエンジンに「詰むか」と聞く機能）に使ってよいエンジンか。
+        KomoringHeights系のみ。棋人など他のエンジンは、答えが遅かったり食い違ったりして検証が止まるため使わない。
+        ファイル名ではなく、エンジンが「usi」に答える名前（id name / id author）で見分ける。"""
+        p = self._tsume_path()
+        if not p:
+            return False
+        try:
+            key = (p, os.path.getmtime(p))
+        except OSError:
+            return False
+        cache = getattr(self, "_oracle_cache", None)
+        if cache is None:
+            cache = self._oracle_cache = {}
+        if key in cache:
+            return cache[key]
+        ok = False
+        proc = None
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.Popen([p], cwd=os.path.dirname(os.path.abspath(p)) or None,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags)
+            q = queue.Queue()
+
+            def rd():
+                try:
+                    for line in proc.stdout:
+                        q.put(line.strip())
+                except Exception:
+                    pass
+                q.put(None)
+            threading.Thread(target=rd, daemon=True).start()
+            proc.stdin.write("usi\n")
+            proc.stdin.flush()
+            end = time.time() + 10
+            names = []
+            while time.time() < end:
+                try:
+                    line = q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if line is None or line.startswith("usiok"):
+                    break
+                if line.startswith("id "):
+                    names.append(line.lower())
+            txt = " ".join(names)
+            ok = ("komoring" in txt) or ("komori-n" in txt)
+        except Exception:
+            ok = False
+        finally:
+            try:
+                if proc and proc.poll() is None:
+                    proc.stdin.write("quit\n")
+                    proc.stdin.flush()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        proc.kill()
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        cache[key] = ok
+        return ok
+
     def close_tsume_engine(self):
         eng, self.tsume_eng = self.tsume_eng, None
         if eng:
@@ -3255,9 +3323,9 @@ class MainWindow(QMainWindow):
                     hl = rl[1] if (rl and rl[0] == sfen) else None
                     # 制限時間は、設定の「詰み探索の時間」に従う（最低180秒。0=無制限）
                     total = max(180, int(self.cfg.get("mate_sec", 60)) or 86400)
-                    res = tsume_verify.detail(sfen, list(pv), time_limit=(30 if self._tsume_path() else total),
+                    res = tsume_verify.detail(sfen, list(pv), time_limit=(30 if self._oracle_ok() else total),
                                               fmt=core.move_ja, hint_line=hl)
-                    if res.get("state") == "timeout" and self._tsume_path():
+                    if res.get("state") == "timeout" and self._oracle_ok():
                         try:
                             import tsume_native
                             use_kh = bool(tsume_native.set_oracle(self._kh_oracle))
