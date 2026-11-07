@@ -609,6 +609,7 @@ struct Solver {
     std::unordered_map<Key128,std::vector<DEnt>,KH> dpt;
     std::unordered_set<Key128,KH> dpath;
     long long dp_nodes=0,dp_ent=0;
+    bool dp_deep=false;  // 深さの上限に達したか
     int dp_prune=1;      // 合駒の静的な絞り込み
     int dp_chain=1;      // 合駒を鎖にまとめる
     static constexpr uint64_t DINF=(1ULL<<40);
@@ -671,7 +672,7 @@ struct Solver {
         bool orn=(b.turn==0);
         std::vector<DItem> items;dp_items(b,items);
         if(items.empty()){ if(orn){rpn=DINF;rdn=0;}else{rpn=0;rdn=DINF;} dp_put(b,rpn,rdn);return;}
-        if(depth>600){rpn=DINF;rdn=0;return;}
+        if(depth>600){dp_deep=true;rpn=DINF;rdn=0;return;}   // 深すぎる枝は打ち切る（このとき「不詰」とは断定せず、結果を「不明」にする）
         Key128 kb=key(b,0);
         if(orn){for(auto&it:items){DP t;bool ex;if(!dp_look(it.q,t,ex)){
                 std::vector<DItem> sub;dp_items(it.q,sub);
@@ -796,7 +797,7 @@ struct Solver {
         }
     }
     std::string dfpn_prime(const Board& b) {
-        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;
+        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;dp_deep=false;
         uint64_t pn,dn;
         try{dp_mid(b,DINF,DINF,pn,dn,0);}catch(...){dpt.clear();dpath.clear();throw;}
         std::string r="U";
@@ -804,18 +805,18 @@ struct Solver {
             dpl_memo.clear();dpl_path.clear();dp_vis.clear();dp_hints=0;
             dp_fill(b,0);hints_on=true;
             r="M "+std::to_string(dp_hints);
-        } else if(dn==0)r="N";
+        } else if(dn==0&&!dp_deep)r="N";
         dpt.clear();dpath.clear();dpl_memo.clear();dp_vis.clear();
         return r;
     }
     long long dp_cap=15000000;
     std::string dfpn_quick(const Board& b) {
-        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;
+        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;dp_deep=false;
         uint64_t pn,dn;
         try{dp_mid(b,DINF,DINF,pn,dn,0);}catch(...){dpt.clear();dpath.clear();throw;}
         std::string r;
         if(pn==0){auto pv=dp_pv(b);r="M "+std::to_string(pv.size())+" "+[&]{std::string o;for(auto m:pv){if(!o.empty())o+=' ';o+=m.usi();}return o;}();}
-        else if(dn==0)r="N";else r="U";
+        else if(dn==0&&!dp_deep)r="N";else r="U";
         dpt.clear();dpath.clear();
         return r;
     }
