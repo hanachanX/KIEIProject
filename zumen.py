@@ -233,10 +233,28 @@ def _components(gray, box, cell):
             continue
         ys, xs = np.where(m)
         bx, by, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-        if (bx2 - bx) > cell * 1.6 or (by2 - by) > cell * 1.6:
-            continue
         bw_, bh_ = bx2 - bx, by2 - by
         sub_m = m[by:by2, bx:bx2]
+        if bh_ > 1.25 * bw_ and bh_ > 0.9 * cell and bw_ < 1.1 * cell:
+            # たて書きで、2文字以上がくっついた列：字の幅（≒字の高さ）を目安に等分し、近くの余白の多い行で切る
+            gap = max(1.0, 0.12 * bw_)
+            n_ch = max(1, int(round((bh_ + gap) / (bw_ + gap))))
+            if n_ch >= 2:
+                ink = sub_m.sum(axis=1)
+                cuts = [0]
+                for kk in range(1, n_ch):
+                    t_ = int(round(kk * bh_ / n_ch))
+                    lo_, hi_ = max(cuts[-1] + 2, t_ - int(0.3 * bw_)), min(bh_ - 2, t_ + int(0.3 * bw_) + 1)
+                    cuts.append(int(lo_ + np.argmin(ink[lo_:hi_])) if hi_ > lo_ else t_)
+                cuts.append(bh_)
+                for r0, r1 in zip(cuts[:-1], cuts[1:]):
+                    part = sub_m[r0:r1]
+                    if part.any():
+                        yy, xx = np.where(part)
+                        out.append((x0 + x + bx + xx.min(), y0 + y + by + r0 + yy.min(), xx.max() + 1 - xx.min(), yy.max() + 1 - yy.min()))
+                continue
+        if (bx2 - bx) > cell * 1.6 or (by2 - by) > cell * 1.6:
+            continue
         if bh_ < 0.6 * cell and bw_ > 1.15 * bh_:
             cols = sub_m.any(axis=0)
             pieces, start = [], None
@@ -289,6 +307,19 @@ def _num_value(chars):
     return KANJI_NUM.get(chars[0], 1)
 
 
+_hm = {}
+
+
+def _hand_mask(clf, classes):
+    if "m" not in _hm:
+        ok = []
+        for nm in classes:
+            body = nm[1:] if nm != "other" else ""
+            ok.append(1.0 if (nm == "other" or body.startswith("#") or body in ("R", "B", "G", "S", "N", "L", "P")) else 0.0)
+        _hm["m"] = np.array(ok, np.float32)
+    return _hm["m"]
+
+
 def read_hands(bgr, xs, ys):
     """戻り値: {'s': {'R': 2, ...}, 'g': {...}}, デバッグ用の文字の一覧"""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -305,11 +336,19 @@ def read_hands(bgr, xs, ys):
         for (x, y, w, h) in comps:
             crop = gray[y:y + h, x:x + w]
             p = clf.predict_proba(glyph_feature_from_crop(crop).reshape(1, -1))[0]
-            k = int(p.argmax())
+            # 持ち駒に出る字だけを候補にする（玉・成駒は持ち駒に無い）。学習では「その他」の字を多めに入れてあるので、
+            # 駒の字が「その他」とほぼ同じくらいの確率なら、駒の字と読む
+            p = p * _hand_mask(clf, classes)
+            p = p / max(1e-9, float(p.sum()))
+            k_o = classes.index("other")
+            p_o = float(p[k_o])
+            q = p.copy(); q[k_o] = 0
+            kb = int(q.argmax()); p_b = float(q[kb])
+            if p_b >= 0.15 and p_b >= 0.4 * p_o:
+                k, conf = kb, max(p_b, 0.5)
+            else:
+                k, conf = k_o, 1.0
             cls = classes[int(clf.classes_[k])]
-            conf = float(p[k])
-            if conf < 0.5:
-                cls = "other"
             toks.append({"cls": cls, "x": x + w / 2, "y": y + h / 2, "conf": conf})
         debug += [(ri, t["cls"], round(t["conf"], 2)) for t in toks]
         # この領域の向き（字が正立か逆さか）を、駒の字の多い方で決める
@@ -370,11 +409,13 @@ def _remove_grid_lines(gray, cell):
     return out
 
 
-def read_board(bgr, xs, ys):
-    """9x9のクラス名（上が一段・左が9筋）と信頼度を返す"""
+def read_board(bgr, xs, ys, clean=False):
+    """9x9のクラス名（上が一段・左が9筋）と信頼度を返す。
+    clean=True（きれいな図：線が直線で見つかった）のときは、線の除去をしない（細い字の横棒、たとえば王の横線が、線と間違えて消えるため）"""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     cell = (xs[-1] - xs[0]) / 9.0
-    gray = _remove_grid_lines(gray, cell)
+    if not clean:
+        gray = _remove_grid_lines(gray, cell)
     feats = []
     for r in range(9):
         for c in range(9):
@@ -441,6 +482,7 @@ def read_diagram(bgr, gote_rest=None):
     読めなければ ValueError
     """
     g = find_grid(bgr)
+    clean = g is not None
     if g is None:
         r = rectify(bgr)       # 写真など：盤が傾いている・ゆがんでいる場合は、まっすぐに直してから読む
         if r is None:
@@ -448,7 +490,7 @@ def read_diagram(bgr, gote_rest=None):
         bgr, xs, ys = r
     else:
         xs, ys = g
-    board, conf = read_board(bgr, xs, ys)
+    board, conf = read_board(bgr, xs, ys, clean=clean)
     hands, _dbg = read_hands(bgr, xs, ys)
     notes = []
     n_ks = sum(1 for row in board for x in row if x == "sK")
