@@ -347,6 +347,8 @@ def read_hands(bgr, xs, ys):
         comps = _components(gray, box, cell)
         toks = []
         for (x, y, w, h) in comps:
+            if max(w, h) < 0.4 * cell:
+                continue                      # 点やごみ（字が割れた破片など）は読まない
             crop = gray[y:y + h, x:x + w]
             p = clf.predict_proba(glyph_feature_from_crop(crop).reshape(1, -1))[0]
             # 持ち駒に出る字だけを候補にする（玉・成駒は持ち駒に無い）。学習では「その他」の字を多めに入れてあるので、
