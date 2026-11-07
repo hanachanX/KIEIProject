@@ -411,6 +411,7 @@ struct Pos {
 };
 
 struct Timeout {};
+struct NodeLimit {};
 // 中断用：どのスレッドからでも立てられる。立てると、計算中の探索が次の確認のところで止まる（時間切れと同じ扱い）
 static std::atomic<bool> g_cancel{false};
 // 128ビットの鍵（局面の見分け用）。64ビットより衝突がずっと少ない。
@@ -608,7 +609,7 @@ struct Solver {
     struct DEnt{uint8_t a[7],d[7];uint64_t pn,dn;};
     std::unordered_map<Key128,std::vector<DEnt>,KH> dpt;
     std::unordered_set<Key128,KH> dpath;
-    long long dp_nodes=0,dp_ent=0;
+    long long dp_nodes=0,dp_ent=0,dp_limit=0;
     bool dp_deep=false;  // 深さの上限に達したか
     int dp_prune=1;      // 合駒の静的な絞り込み
     int dp_chain=1;      // 合駒を鎖にまとめる
@@ -668,6 +669,7 @@ struct Solver {
     }
     void dp_mid(const Board& b,uint64_t thpn,uint64_t thdn,uint64_t& rpn,uint64_t& rdn,int depth) {
         tick();++dp_nodes;
+        if(dp_limit&&dp_nodes>dp_limit)throw NodeLimit{};
         if(dp_ent>dp_cap)throw Timeout{};   // 局面表が大きくなりすぎたら打ち切る（メモリ保護）
         bool orn=(b.turn==0);
         std::vector<DItem> items;dp_items(b,items);
@@ -796,28 +798,43 @@ struct Solver {
             for(auto&c:ch)if(dp_get(c.second).pn==0)dp_fill(c.second,depth+1);
         }
     }
+    // 設定を順番に切り替えて試す（問題によって得意な設定が違うため）。各回の上限を倍々に増やしながら、
+    // 「絞り込み＋鎖」「鎖のみ」「絞り込みのみ」「どちらもなし」を順に試し、最初に結論が出た設定を採用する
+    void dp_portfolio(const Board& b,uint64_t& pn,uint64_t& dn){
+        static const int modes[4][2]={{1,1},{0,1},{1,0},{0,0}};
+        long long lim=250000;
+        for(int round=0;;++round,lim*=3){
+            for(int m=0;m<4;++m){
+                dp_prune=modes[m][0];dp_chain=modes[m][1];
+                dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;dp_deep=false;dp_limit=lim;
+                try{dp_mid(b,DINF,DINF,pn,dn,0);}
+                catch(NodeLimit&){dpt.clear();dpath.clear();continue;}
+                catch(...){dp_limit=0;dp_prune=1;dp_chain=1;dpt.clear();dpath.clear();throw;}
+                if(pn==0||(dn==0&&!dp_deep)){dp_limit=0;return;}   // 結論が出た（このとき局面表と設定はそのまま残す）
+                if(dp_deep&&round>=1){dp_limit=0;return;}          // 深さ上限に当たった場合は「不明」で返す
+            }
+        }
+    }
     std::string dfpn_prime(const Board& b) {
-        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;dp_deep=false;
         uint64_t pn,dn;
-        try{dp_mid(b,DINF,DINF,pn,dn,0);}catch(...){dpt.clear();dpath.clear();throw;}
+        dp_portfolio(b,pn,dn);
         std::string r="U";
         if(pn==0){
             dpl_memo.clear();dpl_path.clear();dp_vis.clear();dp_hints=0;
             dp_fill(b,0);hints_on=true;
             r="M "+std::to_string(dp_hints);
         } else if(dn==0&&!dp_deep)r="N";
-        dpt.clear();dpath.clear();dpl_memo.clear();dp_vis.clear();
+        dpt.clear();dpath.clear();dpl_memo.clear();dp_vis.clear();dp_prune=1;dp_chain=1;
         return r;
     }
     long long dp_cap=15000000;
     std::string dfpn_quick(const Board& b) {
-        dpt.clear();dpath.clear();dp_nodes=0;dp_ent=0;dp_deep=false;
         uint64_t pn,dn;
-        try{dp_mid(b,DINF,DINF,pn,dn,0);}catch(...){dpt.clear();dpath.clear();throw;}
+        dp_portfolio(b,pn,dn);
         std::string r;
         if(pn==0){auto pv=dp_pv(b);r="M "+std::to_string(pv.size())+" "+[&]{std::string o;for(auto m:pv){if(!o.empty())o+=' ';o+=m.usi();}return o;}();}
         else if(dn==0&&!dp_deep)r="N";else r="U";
-        dpt.clear();dpath.clear();
+        dpt.clear();dpath.clear();dp_prune=1;dp_chain=1;
         return r;
     }
 
