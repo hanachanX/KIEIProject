@@ -535,7 +535,7 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
             T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
             if hint_line:
                 T.hint_line(sfen, list(hint_line))
-            T.hint_line(sfen, list(pv))       # 今から確かめる手順そのものも、先に試す手にする（棋人などの手順が速く確かめられる）
+            T.hint_line(sfen, list(pv))       # 今から確かめる手順そのものも、先に試す手にする（shtsume などの手順が速く確かめられる）
         except Exception:
             pass
         q = shogi.Board(sfen); q.push_usi(pv[0])

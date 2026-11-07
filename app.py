@@ -2244,7 +2244,7 @@ class MainWindow(QMainWindow):
 
     def _oracle_ok(self):
         """検証中の問い合わせ（棋慧の探索がエンジンに「詰むか」と聞く機能）に使ってよいエンジンか。
-        KomoringHeights系のみ。棋人など他のエンジンは、答えが遅かったり食い違ったりして検証が止まるため使わない。
+        KomoringHeights系のみ。shtsume など他のエンジンは、答えが遅かったり食い違ったりして検証が止まるため使わない。
         ファイル名ではなく、エンジンが「usi」に答える名前（id name / id author）で見分ける。"""
         p = self._tsume_path()
         if not p:
