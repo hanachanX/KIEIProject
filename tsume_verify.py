@@ -532,7 +532,7 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
     deadline = _time.time() + time_limit
     try:
         try:      # 先に試す手を登録して、読む順番を良くする（結果は変わらない）：df-pnで見つけた手順と、直した手順
-            T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
+            T.prime_hints(sfen, min(8.0, max(2.0, time_limit / 4.0)))
             if hint_line:
                 T.hint_line(sfen, list(hint_line))
         except Exception:
@@ -797,7 +797,7 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
         pre = None          # 詰みを確認した直後（記憶が温かいうち）に作っておいた、手順と余詰の確認結果
         try:      # df-pn（詰み問合せ）の結果を、精密な探索が先に試す手として登録する（結果は変わらず、読む順番が良くなって速くなる）
             _say("詰み問合せ（df-pn）で見当をつけています")
-            T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
+            T.prime_hints(sfen, min(8.0, max(2.0, time_limit / 4.0)))
         except Exception:
             pass
         n = 1
