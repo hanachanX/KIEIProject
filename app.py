@@ -2138,6 +2138,7 @@ class MainWindow(QMainWindow):
     def tsume_start(self, p):
         self.tsume = {"prob": p, "line": p["line"], "busy": False, "hint": 0, "pending": None}
         self.mate_report = None
+        self._vr = None                            # 前の問題の「変化の一覧」の記憶は捨てる
         self.tsume_seq += 1
         self.set_variations(None)
         self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
@@ -2244,7 +2245,7 @@ class MainWindow(QMainWindow):
 
     def _oracle_ok(self):
         """検証中の問い合わせ（棋慧の探索がエンジンに「詰むか」と聞く機能）に使ってよいエンジンか。
-        KomoringHeights系のみ。shtsume など他のエンジンは、答えが遅かったり食い違ったりして検証が止まるため使わない。
+        KomoringHeights系のみ。棋人など他のエンジンは、答えが遅かったり食い違ったりして検証が止まるため使わない。
         ファイル名ではなく、エンジンが「usi」に答える名前（id name / id author）で見分ける。"""
         p = self._tsume_path()
         if not p:
@@ -3553,8 +3554,8 @@ class MainWindow(QMainWindow):
 
     def _render_verify(self):
         vr = getattr(self, "_vr", None)
-        if not vr:
-            return
+        if not vr or self.start_sfen != vr["sfen"]:
+            return                                  # 別の局面・問題に移っていたら、古い結果は出さない
         sb = self.result.verticalScrollBar()
         pos = sb.value()
         self.result.setHtml(vr["base"].replace("<!--ALTS-->", self._alts_html()))
@@ -3565,7 +3566,11 @@ class MainWindow(QMainWindow):
         vr = getattr(self, "_vr", None)
         if not vr or not s.startswith("alt-"):
             return
+        if self.start_sfen != vr["sfen"]:
+            return                                  # 今の盤は、その結果の局面ではない（古い結果は出さない）
         if not (self.last_mate and self.last_mate[0] == vr["sfen"]):
+            if s.startswith("alt-board"):
+                self.status.setText("この結果は今の局面のものではないため、盤へ取り込めません（詳細検討をやり直してください）")
             return
         kind, _, arg = s.partition(":")
         nodes = [a for a in vr["alts"] if a.get("items")]
@@ -3616,10 +3621,20 @@ class MainWindow(QMainWindow):
             self._render_verify()
             if moves:
                 self._add_alt_variation(vr, key)
+            else:
+                self.status.setText("この変化の手順を作れなかったため、盤へ取り込めませんでした")
             return
         self._render_verify()
 
     def _add_alt_variation(self, vr, key):
+        try:
+            self._add_alt_variation2(vr, key)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.status.setText(f"変化を盤へ取り込めませんでした：{type(e).__name__} {e}")
+
+    def _add_alt_variation2(self, vr, key):
         """変化の一覧で選んだ受けを、盤の分岐棋譜（変化の選択欄）に1つだけ追加する。"""
         sfen = vr["sfen"]
         if not (self.last_mate and self.last_mate[0] == sfen):
@@ -3634,6 +3649,7 @@ class MainWindow(QMainWindow):
         it = next((x for x in a["items"] if x["usi"] == usi), None)
         moves = vr["moves"].get(key)
         if it is None or not moves:
+            self.status.setText("この変化の手順がまだ作られていません（もう一度押してください）")
             return
         mg = self.main_game
         if not (mg and mg[2] == sfen and list(mg[0]) == main):
@@ -3651,6 +3667,7 @@ class MainWindow(QMainWindow):
         base = {"sfen": sfen, "moves": list(main), "comments": dict(mg[1]) if mg else {}, "variations": variations}
         self.set_variations(base)
         self.var_combo.setCurrentIndex(idx + 1)
+        self.on_variation(idx + 1)                 # 選択欄の切り替え通知に頼らず、必ず盤をその変化にする
 
     def show_result(self, md):
         """この局面の解説の欄に出す（全局の結果は別のタブに残る）。"""
