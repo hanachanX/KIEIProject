@@ -3488,7 +3488,7 @@ class MainWindow(QMainWindow):
         self._vr = None
         if r.get("alts"):
             self._vr = {"base": "".join(h), "alts": r["alts"], "sfen": r["sfen"], "total": r.get("N"),
-                        "open": set(), "lines": {}, "fmt": None}
+                        "open": set(), "lines": {}, "moves": {}, "want": set(), "fmt": None}
             self._render_verify()
         else:
             self.result.setHtml("".join(h))
@@ -3529,7 +3529,7 @@ class MainWindow(QMainWindow):
                 names = [x["label"] for x in its]
                 head = "・".join(names[:4]) + (f" ほか{len(names) - 4}種" if len(names) > 4 else "")
                 if total < mt:
-                    tag = f"<span style='color:#d32f2f'>本手順より{mt - total}手早く詰む</span>"
+                    tag = f"<span style='color:#d32f2f'>早詰・本手順より{mt - total}手早い</span>"
                 elif total == mt:
                     tag = "本手順と同じ手数（変同）"
                 else:
@@ -3537,13 +3537,13 @@ class MainWindow(QMainWindow):
                 key = f"{i}:{its[0]['usi']}"
                 ln = vr["lines"].get(key)
                 if ln is None:
-                    act = f" <a href='alt-line:{key}'>[手順を見る]</a>"
+                    act = f" <a href='alt-line:{key}'>[手順を見る]</a> <a href='alt-board:{key}'>[盤へ]</a>"
                     body = ""
                 elif ln == "...":
                     act = " （手順を調べています…）"
                     body = ""
                 else:
-                    act = ""
+                    act = f" <a href='alt-board:{key}'>[盤へ]</a>"
                     body = f"<br><span style='color:#555'>　{esc(ln)}</span>"
                 lis.append(f"<li>{esc(head)} → 全{total}手で詰み（{tag}）{act}{body}</li>")
             out.append("<ul>" + "".join(lis) + "</ul>")
@@ -3574,9 +3574,14 @@ class MainWindow(QMainWindow):
             vr["open"].symmetric_difference_update({i})
         elif kind == "alt-all":
             vr["open"] = set(range(len(nodes))) if arg == "1" else set()
-        elif kind == "alt-line":
+        elif kind in ("alt-line", "alt-board"):
             i_s, _, usi = arg.partition(":")
             key = f"{i_s}:{usi}"
+            if kind == "alt-board":
+                if key in vr["moves"]:
+                    self._add_alt_variation(vr, key)
+                    return
+                vr["want"].add(key)
             if key in vr["lines"]:
                 return
             a = nodes[int(i_s)]
@@ -3587,23 +3592,65 @@ class MainWindow(QMainWindow):
             sfen, prefix, total = vr["sfen"], list(a["prefix"]), it["total"]
 
             def work():
+                moves = []
                 try:
-                    txt, cut = tsume_verify.alt_line(sfen, prefix, usi, total, time_limit=30)
+                    txt, cut, moves = tsume_verify.alt_line(sfen, prefix, usi, total, time_limit=30)
                     if cut:
                         txt += "（途中まで）"
                 except Exception as e:
                     txt = f"（手順を出せませんでした：{e}）"
-                self.sig.alt_line_done.emit((sfen, key, txt))
+                self.sig.alt_line_done.emit((sfen, key, txt, moves))
             threading.Thread(target=work, daemon=True).start()
         self._render_verify()
 
     def on_alt_line_done(self, d):
-        sfen, key, txt = d
+        sfen, key, txt, moves = d
         vr = getattr(self, "_vr", None)
         if not vr or vr["sfen"] != sfen:
             return
         vr["lines"][key] = txt
+        if moves:
+            vr["moves"][key] = list(moves)
+        if key in vr["want"]:
+            vr["want"].discard(key)
+            self._render_verify()
+            if moves:
+                self._add_alt_variation(vr, key)
+            return
         self._render_verify()
+
+    def _add_alt_variation(self, vr, key):
+        """変化の一覧で選んだ受けを、盤の分岐棋譜（変化の選択欄）に1つだけ追加する。"""
+        sfen = vr["sfen"]
+        if not (self.last_mate and self.last_mate[0] == sfen):
+            return
+        main = list(self.verified_pv or []) if self.verified_game else []
+        if not main:
+            self.status.setText("先に「検証済み手順を盤へ」が使える状態（詳細検討が終わった状態）にしてください")
+            return
+        nodes = [a for a in vr["alts"] if a.get("items")]
+        i_s, _, usi = key.partition(":")
+        a = nodes[int(i_s)]
+        it = next((x for x in a["items"] if x["usi"] == usi), None)
+        moves = vr["moves"].get(key)
+        if it is None or not moves:
+            return
+        mg = self.main_game
+        if not (mg and mg[2] == sfen and list(mg[0]) == main):
+            self.apply_mate_line(verified=True)          # 本手順（と変同の変化）を盤に取り込む
+            mg = self.main_game
+        prefix = list(a["prefix"])
+        variations = list(self.variations)
+        idx = next((n for n, v in enumerate(variations) if list(v["prefix"]) + list(v["moves"]) == moves), -1)
+        if idx < 0:
+            tag = "・早詰" if it["total"] < a["main_total"] else ""
+            variations.append({"from": len(prefix) + 1, "prefix": prefix, "moves": moves[len(prefix):], "parent": -1,
+                               "comments": {}, "all_comments": {}, "end": "詰み",
+                               "label": f"変化 {a['ply']}手目 {it['label']}…（{it['total']}手{tag}）"})
+            idx = len(variations) - 1
+        base = {"sfen": sfen, "moves": list(main), "comments": dict(mg[1]) if mg else {}, "variations": variations}
+        self.set_variations(base)
+        self.var_combo.setCurrentIndex(idx + 1)
 
     def show_result(self, md):
         """この局面の解説の欄に出す（全局の結果は別のタブに残る）。"""

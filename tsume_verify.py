@@ -732,7 +732,7 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
 
 def alt_line(sfen, prefix, usi, total, time_limit=30, fmt=None):
     """本手順の途中で玉方が別の受け usi を指したとき、詰みまでの手順の一例を日本語で返す。
-    prefix: そこまでの本手順（玉方の手の直前まで）。total: その受けでの全手数。返り値: (文, 途中で打ち切ったか)"""
+    prefix: そこまでの本手順（玉方の手の直前まで）。total: その受けでの全手数。返り値: (文, 途中で打ち切ったか, 全手順のUSI手のリスト)"""
     old = T.TIMEOUT
     T.TIMEOUT = max(1.0, time_limit)
     try:
@@ -759,7 +759,7 @@ def alt_line(sfen, prefix, usi, total, time_limit=30, fmt=None):
             out.append(ja_move(bd, u)); bd.push_usi(u)
         cut = bool(info.get("cut"))
         txt = " ".join(out) + ("" if cut else f"　まで{total}手")
-        return txt, cut
+        return txt, cut, list(line)
     finally:
         T.TIMEOUT = old
 
