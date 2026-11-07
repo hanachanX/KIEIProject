@@ -35,7 +35,7 @@ try:
 except Exception:
     tsume_verify = None
 try:
-    import tsume_kh_repair                   # Komoringの手順の無駄合を、Komoringへの問い合わせで直す
+    import tsume_kh_repair                   # Komoringの手順の無駄合を、詰将棋エンジンへの問い合わせで直す
 except Exception:
     tsume_kh_repair = None
 
@@ -766,7 +766,7 @@ class SettingsDialog(QDialog):
         form.addRow("エンジン（exe）", self._row(self.engine, b1))
 
         self.tengine = QLineEdit(cfg.get("tsume_engine_path", _default_tsume_engine()))
-        self.tengine.setPlaceholderText("詰将棋モードで使う専用エンジン（KomoringHeights の exe）。空欄なら通常のエンジンを使う")
+        self.tengine.setPlaceholderText("詰将棋モードで使う専用エンジン（KomoringHeights などの exe）。空欄なら通常のエンジンを使う")
         bt = QPushButton("参照…")
         bt.clicked.connect(self._pick_tsume_engine)
         form.addRow("詰将棋用エンジン（exe）", self._row(self.tengine, bt))
@@ -1234,7 +1234,7 @@ class MainWindow(QMainWindow):
         self.btn_mate.setToolTip("詰将棋用：この局面の詰み手順を探します。詰将棋用エンジンが設定されていればそれを、無ければ通常のエンジンの詰み探索(go mate)を使います。止めるには右の「停止」")
         self.btn_mate.clicked.connect(self.search_mate)
         self.btn_kiei = QPushButton("棋慧で解く")
-        self.btn_kiei.setToolTip("Komoringなどの外部エンジンを使わず、棋慧だけでこの詰将棋を解きます（短い手数から順に読むので、15手前後までが目安）。"
+        self.btn_kiei.setToolTip("詰将棋用の外部エンジンを使わず、棋慧だけでこの詰将棋を解きます（短い手数から順に読むので、15手前後までが目安）。"
                                  "最短の手数・初手・変化まで調べます")
         self.btn_kiei.clicked.connect(self.solve_kiei)
         self.btn_quick = QPushButton("高速チェック")
@@ -1246,7 +1246,7 @@ class MainWindow(QMainWindow):
         self.btn_mate_apply.setEnabled(False)
         self.btn_mate_apply.clicked.connect(self.apply_mate_line)
         self.btn_mate_check = QPushButton("手順検証")
-        self.btn_mate_check.setToolTip("Komoringの手順に出てくる合駒が無駄合でないかを、すばやく確かめます（他の変化は調べません）")
+        self.btn_mate_check.setToolTip("詰将棋エンジンの手順に出てくる合駒が無駄合でないかを、すばやく確かめます（他の変化は調べません）")
         self.btn_mate_check.setEnabled(False)
         self.btn_mate_check.clicked.connect(lambda: self.verify_mate("line"))
         self.btn_mate_alt = QPushButton("詳細検討")
@@ -3055,7 +3055,7 @@ class MainWindow(QMainWindow):
             if first["n"] and first["n"] != n:
                 text += [f"（エンジンは詰みまで{first['n']}手と報告。表示できた手順は{n}手分です）", ""]
             if r.get("engine") == "KomoringHeights":
-                text += ["詰将棋専用エンジン（KomoringHeights）の手順（最短とは限りません）：", "", (tsume_verify.line_ja(r["sfen"], pv) if tsume_verify is not None else core.pv_ja(b, pv, n)), ""]
+                text += ["詰将棋専用エンジンの手順（最短とは限りません）：", "", (tsume_verify.line_ja(r["sfen"], pv) if tsume_verify is not None else core.pv_ja(b, pv, n)), ""]
             else:
                 text += ["エンジンの手順（最短とは限りません）：", "", core.pv_ja(b, pv, n), ""]
             if first["king"]:
@@ -3079,7 +3079,7 @@ class MainWindow(QMainWindow):
                     k = next((i for i, (x, y) in enumerate(zip(cmp_, pv)) if x != y), min(len(cmp_), len(pv)))
                     text.append(f"棋譜は{len(cmp_)}手、エンジンは{n}手。{k + 1}手目から手順が違います"
                                 f"（同じ手数の別解・余詰め・エンジンの手順が最短でない、のいずれかです）。")
-            text += ["", "※KomoringHeightsの手順は、無駄合を含んでいる可能性があります。「手順検証」「詳細検討」で確かめられます。"]
+            text += ["", "※詰将棋エンジンの手順は、無駄合を含んでいる可能性があります。「手順検証」「詳細検討」で確かめられます。"]
             self.show_result("\n".join(text))
             self.mate_report = (self.start_sfen, self.result.toHtml())
             self.status.setText(f"{n}手詰を発見（{sec:.1f}秒）　「詰み手順を盤へ」で棋譜にできます")
@@ -3175,7 +3175,7 @@ class MainWindow(QMainWindow):
                     res = tsume_verify.quick_check(sfen, list(pv), time_limit=120, fmt=core.move_ja)
                     if res.get("state") == "warn" and tsume_kh_repair is not None and self._tsume_path():
                         # 手順に無駄合が見つかった：Komoringに問い合わせて、無駄合を除いた最長の手順に直してみる
-                        vprog["text"] = "無駄合が見つかったため、Komoringで手順を直しています"
+                        vprog["text"] = "無駄合が見つかったため、詰将棋エンジンで手順を直しています"
                         try:
                             rp = tsume_kh_repair.Repair(tsume_kh_repair.Asker(self._kh_ask), max_asks=600, time_limit=90)
                             self._cur_repair = rp
@@ -3189,7 +3189,7 @@ class MainWindow(QMainWindow):
                                     "check": tsume_kh_repair.check(sfen, rr["line"]),
                                 }
                             else:
-                                res["repair_msg"] = "Komoringへの問い合わせでは、手順を直せませんでした。"
+                                res["repair_msg"] = "詰将棋エンジンへの問い合わせでは、手順を直せませんでした。"
                         except Exception as e:
                             res["repair_msg"] = f"手順を直す途中で止まりました：{e}"
                 else:
@@ -3202,7 +3202,7 @@ class MainWindow(QMainWindow):
                         except Exception:
                             use_kh = False
                         if use_kh:
-                            vprog["text"] = "30秒で終わらないため、Komoringの助けを借りて検証中"
+                            vprog["text"] = "30秒で終わらないため、詰将棋エンジンの助けを借りて検証中"
                             res = tsume_verify.detail(sfen, list(pv), time_limit=150, fmt=core.move_ja)
                             res["sec"] = res.get("sec", 0.0) + 30.0
             except Exception as e:
@@ -3252,7 +3252,7 @@ class MainWindow(QMainWindow):
         title = "棋慧で解く" if by_kiei else ("手順検証" if kind == "line" else "詳細検討")
         h = [f"<h3>{title}（棋慧エンジン）</h3>"]
         if kh:
-            h.append(f"<p>{'棋慧が見つけた手順' if by_kiei else 'KomoringHeightsの手順'}：<br>{esc(kh)}</p>")
+            h.append(f"<p>{'棋慧が見つけた手順' if by_kiei else '詰将棋エンジンの手順'}：<br>{esc(kh)}</p>")
         if st in ("skip", "timeout", "error"):
             h.append(f"<p>{esc(r.get('msg') or '検証できませんでした。')}</p>")
         elif kind == "line":
@@ -3260,7 +3260,7 @@ class MainWindow(QMainWindow):
                 h.append("<p>無駄合は見つかりませんでしたが、次の合駒は時間内に判定できませんでした（無駄合でないとは言い切れません）：</p>")
                 h.append(f"<p>{esc(' '.join(r.get('pending', [])))}</p>")
             elif st == "warn":
-                h.append("<p><b><span style='color:#d32f2f'>Komoringの手順は正確でない可能性があります。</span></b></p>")
+                h.append("<p><b><span style='color:#d32f2f'>見つかった手順は正確でない可能性があります。</span></b></p>")
                 h.append(f"<p>無駄合： {esc(' '.join(r['futile']))}</p>")
                 if r.get("pending"):
                     h.append(f"<p>※次の合駒は時間内に判定できませんでした： {esc(' '.join(r['pending']))}</p>")
@@ -3293,17 +3293,20 @@ class MainWindow(QMainWindow):
                         h.append("<p>※確かめきれなかった場面があります（問い合わせの時間切れなど）。</p>")
                     names = {"mate": "詰み", "nomate": "不詰", "other": "時間切れ等"}
                     det = "、".join(f"{names.get(k, k)} {v[0]}回" for k, v in rep.get("by", {}).items())
-                    h.append(f"<p>（Komoringへの問い合わせ：{rep['asks']}回・合計{rep['ask_sec']:.1f}秒　内訳：{esc(det)}）</p>")
+                    h.append(f"<p>（詰将棋エンジンへの問い合わせ：{rep['asks']}回・合計{rep['ask_sec']:.1f}秒　内訳：{esc(det)}）</p>")
                 else:
                     if r.get("repair_msg"):
                         h.append(f"<p>{esc(r['repair_msg'])}</p>")
+                    if not r.get("repair_msg") and not self._tsume_path():
+                        h.append("<p>手順を自動で直すには、設定で「詰将棋用エンジン」（KomoringHeights など）を指定してください。"
+                                 "指定しなくても、「棋慧で解く」なら棋慧だけで正確な手順を求められます（時間がかかることがあります）。</p>")
                     h.append("<p>正しい手順や手数は「詳細検討」で調べられます（時間がかかることがあります）。</p>")
             else:
-                h.append("<p>KomoringHeightsの手順に、無駄合は見つかりませんでした。</p>")
+                h.append("<p>見つかった手順に、無駄合は見つかりませんでした。</p>")
                 h.append("<p>※この手順1本の合駒だけを調べています。他の変化や余詰は「詳細検討」で調べられます。</p>")
         else:
             if r.get("kh_futile"):
-                h.append(f"<p>KomoringHeightsの手順は無駄合（{esc(' '.join(r['kh_futile']))}）を含んでいます。"
+                h.append(f"<p>見つかった手順は無駄合（{esc(' '.join(r['kh_futile']))}）を含んでいます。"
                          f"それを除くと{r['kh_eff']}手の変化で、最長の変化ではありません。</p>")
             h.append(f"<p>この問題の正しい詰み手数（無駄合を除いた最長の変化）： <b>{r['N']}手</b></p>")
             if r.get("msg"):
@@ -3324,13 +3327,13 @@ class MainWindow(QMainWindow):
                 else:
                     h.append("<p>初手に余詰はありません（最短の詰みになる初手は、上の1手だけです）。</p>")
             else:
-                h.append("<p>初手はKomoringHeightsの手を前提にしています（初手の余詰は調べていません）。</p>")
+                h.append("<p>初手は詰将棋エンジンの手を前提にしています（初手の余詰は調べていません）。</p>")
         h.append(f"<p>棋慧エンジンの考慮時間：{sec:.1f}秒</p>")
         if r.get("kh_used"):
             by = r.get("kh_by", {})
             names = {"mate": "詰み", "nomate": "不詰", "other": "時間切れ等"}
             det = "、".join(f"{names[k]} {v[0]}回・{v[1]:.1f}秒" for k, v in by.items() if k in names)
-            h.append(f"<p>（うち、Komoringへの問い合わせ：{r.get('kh_asks', 0)}回・合計{r.get('kh_sec', 0.0):.1f}秒"
+            h.append(f"<p>（うち、詰将棋エンジンへの問い合わせ：{r.get('kh_asks', 0)}回・合計{r.get('kh_sec', 0.0):.1f}秒"
                      + (f"　内訳：{det}" if det else "") + "）</p>")
         elif not r.get("repair"):
             h.append("<p>（棋慧エンジン単独で検証しました）</p>")
