@@ -1180,12 +1180,15 @@ class MainWindow(QMainWindow):
         self.var_widget.hide()
         nav = QHBoxLayout()
         nav.setSpacing(4)
+        self.nav_lock = []                    # 編集モード中に押せなくするボタン（反転は押せるまま）
         for text, fn in [("|◀ 最初", self.go_first), ("◀ 戻る", self.go_prev), ("進む ▶", self.go_next),
                          ("最後 ▶|", self.go_last), ("反転", self.flip), ("平手へ", self.reset_board)]:
             b = QPushButton(text)
             b.setToolTip({"反転": "盤面を反転", "平手へ": "平手に戻す", "◀ 戻る": "1手戻る", "進む ▶": "1手進む"}.get(text, ""))
             b.clicked.connect(fn)
             nav.addWidget(b)
+            if text != "反転":
+                self.nav_lock.append(b)
         # まとめメニュー：貼り付け・コピー・ファイル（KIFとSFENを選ぶ）
         mb0 = QPushButton("貼り付け")
         mb0.setToolTip("クリップボードの文字を見て、SFEN・棋譜（KIF）のどちらかを自動で判別して読み込みます")
@@ -1228,7 +1231,7 @@ class MainWindow(QMainWindow):
         self.btn_tsumehai.setToolTip("盤上は後手玉(5一)だけにして、残りの駒をすべて玉方(後手)の持ち駒にします（攻方の玉は除く）。そのまま編集モードで、駒を盤に置いて形を作れます")
         self.btn_tsumehai.clicked.connect(self.set_tsume_layout)
         self.btn_tsumehai.setVisible(False)   # 編集モードのときだけ表示
-        btn_turn = QPushButton("手番切替")
+        btn_turn = self.btn_turn = QPushButton("手番切替")
         btn_turn.clicked.connect(self.toggle_turn)
         self.btn_mate = QPushButton("詰みを探す")
         self.btn_mate.setToolTip("詰将棋用：この局面の詰み手順を探します。詰将棋用エンジンが設定されていればそれを、無ければ通常のエンジンの詰み探索(go mate)を使います。止めるには右の「停止」")
@@ -1344,7 +1347,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_go)
         row.addWidget(self.btn_stop)
         row.addWidget(self.auto, 1)
-        btn_set = QPushButton("設定…")
+        btn_set = self.btn_set = QPushButton("設定…")
         btn_set.clicked.connect(self.open_settings)
         row.addWidget(btn_set)
         rv.addLayout(row)
@@ -1360,7 +1363,7 @@ class MainWindow(QMainWindow):
         self.btn_explain = QPushButton("解説する")
         self.btn_explain.setProperty("role", "primary")
         self.btn_explain.clicked.connect(self.explain)
-        more = QPushButton("その他")
+        more = self.btn_more = QPushButton("その他")
         mm = QMenu(more)
         mm.addAction("文章をコピー", self.copy_prompt)
         mm.addAction("保存した解説を開く…", self.open_saved)
@@ -1848,10 +1851,14 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def go_first(self):
+        if self.btn_edit.isChecked():          # 編集モード中は動かさない
+            return
         self.cursor = 0
         self.refresh()
 
     def go_prev(self):
+        if self.btn_edit.isChecked():          # 編集モード中は動かさない
+            return
         if self.tsume:
             self.cursor = max(0, (self.cursor - 1) // 2 * 2)
             self.refresh()
@@ -1861,6 +1868,8 @@ class MainWindow(QMainWindow):
             self.refresh()
 
     def go_next(self):
+        if self.btn_edit.isChecked():          # 編集モード中は動かさない
+            return
         if self.tsume:
             self.cursor = min(len(self.moves) // 2 * 2, self.cursor + 2)
             self.refresh()
@@ -1870,6 +1879,8 @@ class MainWindow(QMainWindow):
             self.refresh()
 
     def go_last(self):
+        if self.btn_edit.isChecked():          # 編集モード中は動かさない
+            return
         self.cursor = len(self.moves)
         self.refresh()
 
@@ -1878,6 +1889,8 @@ class MainWindow(QMainWindow):
         self.boardw.update()
 
     def reset_board(self):
+        if self.btn_edit.isChecked():          # 編集モード中は動かさない
+            return
         self.tsume = None
         self.set_variations(None)
         self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
@@ -2690,18 +2703,53 @@ class MainWindow(QMainWindow):
         self.status.setText("読み取りに失敗：" + msg)
         QMessageBox.warning(self, "スクショを読み取れません", msg)
 
+    def _edit_lock(self, on):
+        """編集モード中は、局面を変えてしまう操作や、検討・解析などの操作を押せなくする（誤操作の防止）。
+        編集モードを切ると、元の状態に戻す。「編集モード」「手番切替」「詰将棋配置」「反転」と盤の編集だけが使える。"""
+        ws = list(getattr(self, "nav_lock", []))
+        hb = list(getattr(self, "header_btns", []))
+        ws += [hb[0], hb[2]] if len(hb) >= 3 else hb          # 貼り付け・ファイル（コピーは使える）
+        ws += [self.move_list, self.var_widget, self.btn_zumen, self.btn_zumen_out, self.btn_shot, self.btn_cap,
+               self.btn_set, self.btn_go, self.auto, self.btn_explain, self.btn_more, self.list]
+        if on:
+            self._edit_saved = {w: w.isEnabled() for w in ws}
+            for w in ws:
+                w.setEnabled(False)
+            self.tools.setTabEnabled(0, False)
+            self.tools.setTabEnabled(2, False)
+            if self.tools.currentIndex() != 1:
+                self.tools.setCurrentIndex(1)
+        else:
+            saved = getattr(self, "_edit_saved", {})
+            for w in ws:
+                w.setEnabled(saved.get(w, True))
+            self.tools.setTabEnabled(0, True)
+            self.tools.setTabEnabled(2, True)
+
     def toggle_edit(self, checked):
         self.boardw.edit_mode = checked
         self.btn_tsumehai.setVisible(checked)
+        self._edit_lock(checked)
         self.boardw.update()
         if checked:
-            self.status.setText("編集モード：駒をドラッグして移動（持ち駒の帯にも落とせます）／右クリックで成り→先後入れ替え→…と切り替え（Shift＋右クリックでメニュー）／空きマスや点線の帯をクリックで駒・持ち駒を追加")
+            self.status.setText("編集モード：駒をドラッグして移動（持ち駒の帯にも落とせます）／右クリックで成り→先後入れ替え→…と切り替え（Shift＋右クリックでメニュー）／空きマスや点線の帯をクリックで駒・持ち駒を追加。編集中は、誤操作を防ぐため、ほかの操作は押せません（「編集モード」を切ると戻ります）")
         else:
             self.refresh()
 
     def set_tsume_layout(self):
         """柿木将棋の「詰将棋用配置」：盤上は後手玉(5一)のみ、残りの駒は全部玉方の持ち駒。攻方の玉は無し。"""
         sfen = "4k4/9/9/9/9/9/9/9/9 b 2r2b4g4s4n4l18p 1"
+        try:      # 作りかけの盤面を消してしまわないよう、確認する（平手と、すでに詰将棋配置のときは聞かない）
+            cur = self.cur_board.sfen().split(" ")[0]
+            if cur not in (sfen.split(" ")[0], "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL"):
+                r = QMessageBox.question(
+                    self, "詰将棋配置",
+                    "いまの盤面は消えて、詰将棋用の配置（後手玉だけ盤上、残りは玉方の持ち駒）に置き換わります。\nよろしいですか？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                if r != QMessageBox.StandardButton.Yes:
+                    return
+        except Exception:
+            pass
         self.orig_line = None                      # 別の局面・棋譜に変わったら、戻る先を忘れる
         self.start_sfen, self.moves, self.cursor, self.names = sfen, [], 0, ["先手", "後手"]
         self.btn_edit.setChecked(True)
