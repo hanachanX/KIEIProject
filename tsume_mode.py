@@ -819,6 +819,10 @@ class TsumeDialog(QDialog):
         be.setToolTip("選んだ問題（または出題中の問題）のタイトル・作者・難易度・メモ（余詰の注意・制作日などの雑メモ）を書き換えます")
         be.clicked.connect(self.edit_info)
         rl.addWidget(be)
+        bf = QPushButton("正解手順を直す…")
+        bf.setToolTip("間違って登録された正解手順を、いまの盤の手順、または棋慧が解き直した手順に置き換えます")
+        bf.clicked.connect(self.fix_line)
+        rl.addWidget(bf)
         v.addLayout(rl)
         bl = QHBoxLayout()
         for text, fn in [("出題", self.start_selected), ("一覧から外す／戻す", self.toggle_hidden), ("ランダム出題", self.start_random),
@@ -1049,6 +1053,122 @@ class TsumeDialog(QDialog):
             if self.shown[self.table.item(r, 0).data(Qt.ItemDataRole.UserRole)]["id"] == p["id"]:
                 self.table.item(r, 6).setText("★" * n or "－")
         self.win.status.setText(f"「{p['title']}」を {'未評価' if n == 0 else '★' * n} にしました")
+
+    def _line_problem(self, sfen, line):
+        """手順が、その局面から正しく指せて、最後が詰みで終わっているか。問題があれば理由の文を返す（正しければ空）。"""
+        try:
+            b = shogi.Board(sfen)
+            for u in line:
+                b.push_usi(u)
+        except Exception:
+            return "指せない手が含まれています。"
+        if len(line) % 2 == 0:
+            return "最後が攻め方の手ではありません（詰将棋の手順は、攻め方の手で終わります）。"
+        try:
+            if not b.is_checkmate():
+                return "手順の最後で、玉が詰んでいません。"
+        except Exception:
+            pass
+        return ""
+
+    def _apply_line(self, p, line):
+        old = len(p.get("line") or [])
+        p["line"] = list(line)
+        p["steps"] = len(line)
+        p.pop("tree", None)                         # 古い手順から作った判定用の記憶は捨てる
+        db_save(self.dbpath, self.probs)
+        t = getattr(self.win, "tsume", None)
+        if t and t.get("prob") and t["prob"].get("id") == p.get("id"):
+            t["line"] = list(line)                  # 出題中なら、その場で反映
+        self.refresh_label()
+        self.apply_filter()
+        self._select(p)
+        self.win.status.setText(f"「{p['title']}」の正解手順を直しました（{old}手 → {len(line)}手）")
+
+    def fix_line(self):
+        from PyQt6.QtWidgets import QMessageBox
+        p = self.selected_prob()
+        if not p:
+            cur = self.win.tsume.get("prob") if getattr(self.win, "tsume", None) else None
+            p = next((q for q in self.probs if cur and q["id"] == cur["id"]), None)
+        if not p:
+            self.win.status.setText("直す問題を一覧から選んでください")
+            return
+        w = self.win
+        board_ok = bool(w.moves) and sfen_key(w.start_sfen) == sfen_key(p["sfen"])
+        cur_line = list(p.get("line") or [])
+        box = QMessageBox(self)
+        box.setWindowTitle("正解手順を直す")
+        box.setText(f"「{p['title']}」（いまの登録：{len(cur_line)}手）の正解手順を、どう直しますか？")
+        box.setInformativeText("・盤の手順：この問題の初形から、盤に出している手順に置き換えます（自分で正しい手順を盤に出してから押してください）。\n"
+                               "・棋慧で解き直す：棋慧のエンジンで解いて、無駄合を除いた手順に置き換えます（難しい問題は時間がかかります）。")
+        b1 = box.addButton("盤の手順に置き換える", QMessageBox.ButtonRole.AcceptRole)
+        b2 = box.addButton("棋慧で解き直す", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("やめる", QMessageBox.ButtonRole.RejectRole)
+        if not board_ok:
+            b1.setEnabled(False)
+            b1.setToolTip("盤が、この問題の初形から始まる手順になっていません")
+        box.exec()
+        if box.clickedButton() is b1:
+            line = list(w.moves)
+            why = self._line_problem(p["sfen"], line)
+            if why:
+                QMessageBox.warning(self, "置き換えられません", "盤の手順は、正解手順として使えません。\n" + why)
+                return
+            self._apply_line(p, line)
+        elif box.clickedButton() is b2:
+            self._resolve_line(p)
+
+    def _resolve_line(self, p):
+        """棋慧エンジンで解いて、変化の検討で直した手順（無駄合なし）に置き換える。別スレッドで動かす。"""
+        import threading
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QMessageBox
+        try:
+            import tsume_verify as TV
+        except Exception:
+            QMessageBox.warning(self, "解けません", "検証用の部品(tsume_verify)が読み込めていません。")
+            return
+        if getattr(self, "_resolving", False):
+            self.win.status.setText("解き直しの最中です。終わるまでお待ちください")
+            return
+        self._resolving = True
+        sfen = p["sfen"]
+        out = {}
+        self.win.status.setText("棋慧で解き直しています…（難しい問題は数分かかります）")
+
+        def work():
+            try:
+                sv = TV.solve_first(sfen, time_limit=120)
+                if sv.get("state") != "ok":
+                    out["msg"] = sv.get("msg") or "解けませんでした。"
+                else:
+                    r = TV.detail(sfen, list(sv["pv"]), time_limit=120)
+                    g = r.get("game") or {}
+                    out["line"] = list(g.get("moves") or sv["pv"])
+            except Exception as e:
+                out["msg"] = str(e)
+            out["done"] = True
+        threading.Thread(target=work, daemon=True).start()
+
+        def poll():
+            if not out.get("done"):
+                QTimer.singleShot(500, poll)
+                return
+            self._resolving = False
+            line = out.get("line")
+            if not line:
+                QMessageBox.warning(self, "解き直せません", out.get("msg") or "解けませんでした。")
+                return
+            why = self._line_problem(sfen, line)
+            if why:
+                QMessageBox.warning(self, "解き直せません", "得られた手順が使えませんでした。\n" + why)
+                return
+            r = QMessageBox.question(self, "正解手順を直す",
+                                     f"棋慧が解いた手順は{len(line)}手詰です（いまの登録は{len(p.get('line') or [])}手）。置き換えますか？")
+            if r == QMessageBox.StandardButton.Yes:
+                self._apply_line(p, line)
+        QTimer.singleShot(500, poll)
 
     def edit_info(self):
         from PyQt6.QtWidgets import QDialogButtonBox, QFormLayout, QPlainTextEdit, QSpinBox
