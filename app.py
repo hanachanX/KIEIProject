@@ -4457,6 +4457,17 @@ QDialogButtonBox QPushButton { min-width: 72px; }
 
 def main():
     app = QApplication(sys.argv)
+    try:   # 右クリックメニュー（切り取り・コピー・貼り付け…）や標準ボタンを日本語にする（PyQt6に同梱の翻訳を使う）
+        from PyQt6.QtCore import QLibraryInfo, QTranslator
+        _tr_dir = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+        app._qt_translators = []
+        for _name in ("qtbase_ja", "qt_ja"):
+            _tr = QTranslator(app)
+            if _tr.load(_name, _tr_dir):
+                app.installTranslator(_tr)
+                app._qt_translators.append(_tr)
+    except Exception:
+        pass
     try:   # アプリ専用のアイコンを、ウインドウとタスクバーに付ける（kento.ico が無くても動く）
         from app_icon import apply_app_icon
         apply_app_icon(app, "kiei.ico", "Muramatsu.KieiShogi", folder=os.path.dirname(os.path.abspath(__file__)))
