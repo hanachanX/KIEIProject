@@ -620,7 +620,7 @@ class AltResultDialog(QDialog):
         found, unsure, n = self._items()
         t = []
         if getattr(self, "engine_name", None):
-            t.append(f"【検査に使ったエンジン】{self.engine_name}" + ("　※作意と同じ手数以内で詰む別の王手だけを調べています" if getattr(self, "use_own", False) else ""))
+            t.append(f"【検査に使ったエンジン】{self.engine_name}" + ("　※作意の手数より2手長い詰みまでを調べています（それより長い変長は調べていません。確実に調べるにはKomoringHeightsを使ってください）" if getattr(self, "use_own", False) else ""))
             t.append("")
         if found:
             t.append(f"【余詰あり】作意（{n}手）以外の手順でも詰みます（{len(found)}か所）。作品として不完全です。")

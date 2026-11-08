@@ -446,6 +446,9 @@ def _t_is_mate(b):
     return not _t.gen_evasions(b) and b.is_check()
 
 
+EXTRA_PLIES = 2      # 自前エンジンで余詰を調べるとき、作意の手数より何手長い詰みまで調べるか
+
+
 def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None, tail_marks=None, depth_limit=False):
     """作意の手順に沿って、攻方の各手番で、作意以外の王手が（手数に関係なく）詰むかを調べる。
     戻り値 [(何手目, その局面のSFEN, USI, 'mate' or 'unsure', 全体の詰み手数, その王手からの詰み手順(USIのリスト))]
@@ -472,7 +475,7 @@ def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None, tail_marks
                 break
             if progress:
                 progress(k + 1, len(line), i + 1, len(checks))
-            up = (len(line) - k - 2) if depth_limit else None      # 自前エンジン用：作意と同じ手数以内で詰むかだけを調べる
+            up = (len(line) - k - 2 + EXTRA_PLIES) if depth_limit else None      # 自前エンジン用：作意の手数＋EXTRA_PLIES手までの詰みを調べる
             v, n, ln = _eval_check(b, m, kh, ms, up)
             if v == "mate" and tail_marks is not None and _tail_only_alt(before, ln, k, len(line), main_end_hand):
                 tail_marks.add((k + 1, m.usi()))      # 最終3手の変同（同手数・駒余りなし）。画面の設定で余詰に数えるかを選ぶ
@@ -495,7 +498,7 @@ def alt_retry(items, kh, ms, progress=None, stop=None, line_len=None):
         if progress:
             progress(k, j + 1, len(items))
         b = shogi.Board(before)
-        up = (line_len - k - 1) if line_len else None
+        up = (line_len - k - 1 + EXTRA_PLIES) if line_len else None
         v, n, ln = _eval_check(b, shogi.Move.from_usi(u), kh, ms, up)
         if v == "mate":
             out.append((k, before, u, "mate", (k - 1) + n, ln))
