@@ -1,3 +1,6 @@
+#ifndef USE_CA_CD
+#define USE_CA_CD 0      // 1: 詰み・不詰の記憶(ca, cd)も残す（従来どおり）　0: やめる（既定。メモリが約15%減る）
+#endif
 #ifndef ALLCAP
 #define ALLCAP 1
 #endif
@@ -455,12 +458,29 @@ struct BoolMap {
     size_t size()const{return n;}
     void clear(){free(t);t=nullptr;cap=n=mask=0;}
 };
+// 何も記憶しない表。詰み・不詰の記憶(ca, cd)は、持ち駒の優劣の表(dom)が先に答えるため、ほとんど当たらない（実測で当たり率0.003%〜0.02%）。
+// そのためメモリと上限の件数を食うだけになりがちで、既定ではやめている。USE_CA_CD を 1 にすると、従来どおり記憶する。
+struct NullMap {
+    struct Found{bool ok;bool second;const Found* operator->()const{return this;}
+        bool operator!=(const Found& o)const{return ok!=o.ok;} bool operator==(const Found& o)const{return ok==o.ok;}};
+    struct Ref{bool v; operator bool()const{return v;} bool operator=(bool x){v=x;return x;}};
+    Found find(const Key128&)const{return Found{false,false};}
+    Found end()const{return Found{false,false};}
+    Ref operator[](const Key128&){return Ref{false};}
+    size_t size()const{return 0;}
+    void clear(){}
+};
 using FastMap = BoolMap;      // ← 表の種類を替えるときは、ここを書き換える
 
 static inline uint64_t sm64(uint64_t z){z+=0x9E3779B97F4A7C15ULL;z=(z^(z>>30))*0xBF58476D1CE4E5B9ULL;z=(z^(z>>27))*0x94D049BB133111EBULL;return z^(z>>31);}
 static inline Key128 kmix(const Key128& x,uint64_t t){return Key128{sm64(x.a^sm64(t)),sm64(x.b+t*0xD6E8FEB86659FD93ULL+0x1234567ULL)};}
 struct Solver {
-    FastMap ca,cd,cf,cb;   // cb: 升ごとの無駄合まとめ判定の結果
+    #if USE_CA_CD
+    FastMap ca,cd;
+#else
+    NullMap ca,cd;
+#endif
+    FastMap cf,cb;   // cb: 升ごとの無駄合まとめ判定の結果
     bool batch_on=true;   // 同じ升の合駒を、玉方の持駒を減らさない一番有利な状態で1回だけ判定する（詰めば、その升の全種類が無駄合）
     // Optional oracle: returns 1 (mate under normal rules), -1 (no mate), 0 (unknown). Used only to prune attacker nodes.
     int (*oracle)(const char*)=nullptr;
