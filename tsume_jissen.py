@@ -199,13 +199,42 @@ def native_kh(sfen, ms=3000, upto=None, max_n=31):
 def own_kh(sfen, ms=3000, upto=None):
     """棋慧の自前エンジンで詰みを調べる（DLLがあればDLL、無ければPython版）。戻り値は kh と同じ形。
     攻め方の玉を補わず、詰将棋のルール（無駄合は応手に数えない）で判定する。"""
+    import time as _t
+    t0 = _t.time()
     try:
         import tsume_native as m
         m._library()
         import tsume_verify  # noqa: F401
+        which = "DLL"
+    except Exception as e:
+        which = "PY(" + repr(e)[:60] + ")"
+    try:
+        r = py_kh(sfen, ms, upto) if which != "DLL" else native_kh(sfen, ms, upto)
+    except Exception as e:
+        _dbg(f"EXC {which} {repr(e)[:200]} upto={upto} {sfen}")
+        raise
+    _dbg_call(which, _t.time() - t0, upto, r[0], sfen)
+    return r
+
+
+_DBG_N = [0]
+
+
+def _dbg(msg):
+    """うまく動かないときの調査用。モジュールと同じ場所の alt_debug.txt に書く（書けなくても無視）"""
+    try:
+        import os
+        import time as _t
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "alt_debug.txt"), "a", encoding="utf-8") as f:
+            f.write(_t.strftime("%H:%M:%S ") + msg + "\n")
     except Exception:
-        return py_kh(sfen, ms, upto)
-    return native_kh(sfen, ms, upto)
+        pass
+
+
+def _dbg_call(which, dt, upto, state, sfen):
+    _DBG_N[0] += 1
+    if _DBG_N[0] <= 40 or dt > 1.0:
+        _dbg(f"#{_DBG_N[0]} {which} {dt:.2f}s upto={upto} {state} {sfen}")
 
 
 def own_engine_name():
