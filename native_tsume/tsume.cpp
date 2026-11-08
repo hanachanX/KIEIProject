@@ -208,9 +208,9 @@ struct Board {
     // Fast legal(): temporarily edits sq and restores it (no Board copy). Same result as before.
     struct Undo {Board* b;int from,to,fv,tv;
         ~Undo(){if(from>=0)b->sq[from]=fv;b->sq[to]=tv;}};
-    bool legal(const Move& m) const {
+    bool legal(const Move& m,int kk=-2) const {
         if(!pseudo(m))return false;
-        return legal_body(m);
+        return legal_body(m,kk);
     }
     // For moves produced by board_moves(turn): only the mobility test of pseudo() is still needed.
     // 玉方(後手)の局面で、盤上の駒を動かす応手（合法手）を集める。王手がかかっているときは、応手になりえない手
@@ -223,7 +223,20 @@ struct Board {
             int k=king(1);
             if(k>=0){
                 int a=-1,count=0;kpos=k;
-                for(int s=0;s<81;++s)if(sq[s]>0){if(na<48)ap[na++]=s;if(attacks(sq[s],s,k,0)){a=s;++count;}}
+                {   // 王手をかけている駒を、玉から8方向に見て探す（全81升を調べない）。最初に当たる駒だけが利きを持ちうる。桂は別に見る
+                    static const int DR8[8]={-1,-1,-1,0,0,1,1,1},DF8[8]={-1,0,1,-1,1,-1,0,1};
+                    int tr=k/9,tf=k%9;
+                    for(int d=0;d<8;++d){
+                        int r=tr+DR8[d],f=tf+DF8[d];
+                        while(r>=0&&r<9&&f>=0&&f<9){
+                            int s=r*9+f,v=sq[s];
+                            if(v){if(v>0&&attacks(v,s,k,0)){a=s;++count;}break;}
+                            r+=DR8[d];f+=DF8[d];
+                        }
+                    }
+                    int kr=tr+2;
+                    if(kr<9)for(int df=-1;df<=1;df+=2){int f=tf+df;if(f>=0&&f<9&&sq[kr*9+f]==N){a=kr*9+f;++count;}}
+                }
                 if(count>=1){
                     use=true;std::fill(mask,mask+81,false);
                     if(count==1){
@@ -245,8 +258,11 @@ struct Board {
             return;
         }
         // 応手になりうる手を、最初から直接作る（全部の手を作って捨てない）。並び順は board_moves と同じ（移動元の升→行き先の升→不成→成）。
-        Move cand[512];bool sure[512];int nc=0;
-        const bool tab=kingtab_on()&&na<48;
+        // Move は初期値つきなので、Move cand[512] と書くと呼ぶたびに512個ぶん初期化されて遅い。使う分だけ書き込む未初期化の領域にする
+        alignas(Move) unsigned char cand_buf[512*sizeof(Move)];Move* cand=reinterpret_cast<Move*>(cand_buf);
+        bool sure[512];int nc=0;
+        (void)ap;(void)na;
+        const bool tab=kingtab_on();
         bool ksafe[81];
         if(tab) {   // 玉の移動先ごとに、攻め方の駒の利きが届くかを先に調べる。玉を盤から外した状態で調べる（玉の裏側にも利きが通るため）。他の駒の手を作る前に、必ず元に戻す
             Board* self=const_cast<Board*>(this);int kvsave=sq[kpos];self->sq[kpos]=0;
@@ -254,9 +270,8 @@ struct Board {
             for(int dr=-1;dr<=1;++dr)for(int df=-1;df<=1;++df) {
                 if(!dr&&!df)continue;
                 int r=kr+dr,f=kf+df;if(r<0||r>=9||f<0||f>=9)continue;
-                int t=r*9+f;bool hit=false;
-                for(int i=0;i<na;++i){int as=ap[i];if(as==t)continue;if(attacks(std::abs(sq[as]),as,t,0)){hit=true;break;}}
-                ksafe[t]=!hit;
+                int t=r*9+f;
+                ksafe[t]=!attacked(0,t);   // 攻め方の駒の利きが届くか（玉は盤から外してある）。t上の駒は見ない
             }
             self->sq[kpos]=kvsave;
             if(mode==1) {   // 玉が安全に動ける升が1つでもあれば、それで十分（応手あり）。無ければ何も返さない
@@ -269,6 +284,7 @@ struct Board {
                 return;
             }
         }
+        int msq[81],nmask=0;for(int t=0;t<81;++t)if(mask[t])msq[nmask++]=t;   // 応手になりうる行き先の升（小さい順）
         for(int s=0;s<81;++s) {
             if(!sq[s]||color_of(sq[s])!=1)continue;
             int pt=std::abs(sq[s]);
@@ -285,29 +301,31 @@ struct Board {
                     cand[nc++]={s,t,0,false};
                 }
             } else {
-                for(int t=0;t<81;++t) {
-                    if(!mask[t]||(sq[t]&&color_of(sq[t])==1))continue;
+                for(int mi=0;mi<nmask;++mi) {
+                    int t=msq[mi];
+                    if(sq[t]&&color_of(sq[t])==1)continue;
                     if(!attacks(pt,s,t,1))continue;
                     sure[nc]=false;cand[nc++]={s,t,0,false};
                     if(promoted[pt]&&(zone(s,1)||zone(t,1))){sure[nc]=false;cand[nc++]={s,t,0,true};}
                 }
             }
         }
-        for(int i=0;i<nc;++i)if(sure[i]||legal_bm(cand[i]))out.push_back(cand[i]);
+        for(int i=0;i<nc;++i)if(sure[i]||legal_bm(cand[i],kpos))out.push_back(cand[i]);
     }
     static bool& kingtab_on(){static bool on=true;return on;}
     static bool& direct_on(){static bool on=true;return on;}
-    bool legal_bm(const Move& m) const {
+    bool legal_bm(const Move& m,int kk=-2) const {
         if(!m.promotion&&!mobile(std::abs(sq[m.from]),m.to,turn))return false;
-        return legal_body(m);
+        return legal_body(m,kk);
     }
-    bool legal_body(const Move& m) const {
+    // kk: 動かす側の玉の（指す前の）升。-2なら自分で探す。呼び出し側が知っているときは、毎回81升を探さずに済む
+    bool legal_body(const Move& m,int kk=-2) const {
         Board* self=const_cast<Board*>(this);
         int mover=turn,opp=turn^1;
         Undo u{self,m.from,m.to,m.from>=0?sq[m.from]:0,sq[m.to]};
         if(m.from<0)self->sq[m.to]=sign(mover)*m.drop;
         else {int pt=std::abs(sq[m.from]);self->sq[m.to]=sign(mover)*(m.promotion?promoted[pt]:pt);self->sq[m.from]=0;}
-        if(attacked(opp,king(mover)))return false;
+        if(attacked(opp,kk==-2?king(mover):(m.from>=0&&m.from==kk?m.to:kk)))return false;
         // 打ち歩詰め（歩を打って詰ますのは反則）。玉が逃げられず、歩を取れる駒（動けないピンされた駒は取れない）も無ければ反則。
         if(m.drop!=P)return true;
         int k=king(opp);
@@ -507,10 +525,11 @@ struct Solver {
             a=(a^w)*0x9E3779B97F4A7C15ULL;a=(a<<27)|(a>>37);a*=0xC2B2AE3D27D4EB4FULL;
             c=(c+w)*0x165667B19E3779F9ULL;c^=c>>29;c=(c<<31)|(c>>33);
         };
-        for(int i=0;i<81;i+=8){
-            uint64_t w=0;
-            for(int j=0;j<8&&i+j<81;++j)w|=(uint64_t(b.sq[i+j]+16)&255u)<<(8*j);
-            mixw(w);
+        {   // 盤の81升を1升1バイトに詰めてから、8バイトずつ読む（x86はリトルエンディアンなので、1升ずつ8ビットずらして足す元の計算と同じ値になる）
+            unsigned char buf[88];
+            for(int i=0;i<81;++i)buf[i]=(unsigned char)(b.sq[i]+16);
+            for(int i=81;i<88;++i)buf[i]=0;
+            for(int i=0;i<81;i+=8){uint64_t w;std::memcpy(&w,buf+i,8);mixw(w);}
         }
         if(hands) {
             for(auto& hh:b.hand){
@@ -524,17 +543,17 @@ struct Solver {
     }
     Key128 key(const Board& b,int n) {return hashboard(b,n,true);}
     std::vector<Move> checks(const Board& b) {
-        tick();std::vector<Move> out;int k=b.king(1);
+        tick();std::vector<Move> out;int k=b.king(1);const int ak=b.king(0);   // 攻め方の玉の升（毎回探さない）
         for(int p:b.order[0])if(b.hand[0][p]>0)for(int s=0;s<81;++s)
-            if(!b.sq[s]&&b.attacks(p,k,s,1)) {Move m{-1,s,p,false};if(!b.legal(m))continue;
+            if(!b.sq[s]&&b.attacks(p,k,s,1)) {Move m{-1,s,p,false};if(!b.legal(m,ak))continue;
                 // 打ち歩詰めは反則。玉との間でピンされて歩を取れない駒しか無い場合も、取れないので詰み＝反則（python-shogiの判定はここが甘い）
                 if(p==P){Board q=b;q.push(m);if(!has_evasion(q,0))continue;}
                 out.push_back(m);}
-        if(Board::fastchecks_on()&&b.king(0)<0) {
+        if(Board::fastchecks_on()&&ak<0) {
             // 攻め方に玉が無い（普通の詰将棋）ときは、「指した後に自玉が取られる」ことは無いので、合法判定を省く（動きの確認だけ残す）
             for(auto m:b.board_moves(0))if((m.promotion||mobile(std::abs(b.sq[m.from]),m.to,b.turn))&&b.gives_check_k(m,k))out.push_back(m);
         } else
-        for(auto m:b.board_moves(0))if(b.legal(m)){if(b.gives_check(m))out.push_back(m);}   // 攻め方に玉がある（双玉）とき、自玉に王手がかかる手は指せない
+        for(auto m:b.board_moves(0))if(b.legal(m,ak)){if(b.gives_check(m))out.push_back(m);}   // 攻め方に玉がある（双玉）とき、自玉に王手がかかる手は指せない
         return out;
     }
     std::unordered_set<Key128,KH> inprog;
@@ -559,11 +578,12 @@ struct Solver {
             Board q=b;q.push(d);
             // 合駒は、王手をかけている駒（a）だけでなく、攻め方のどの駒で取ってもよい（他の駒で取れば詰む場合も無駄合）　26/11/03
             // restore=true: 合駒に使った駒を玉方の持駒に戻した（一番有利な）状態で判定する。これで詰めば、どの種類の合駒でも詰むので、その升の全種類が無駄合になる。
+            const int qk0=q.king(0);
             auto caps=[&](bool restore)->bool{
                 for(int from=0;from<81;++from) {
                     if(q.sq[from]<=0)continue;
                     if(from!=a&&!ALLCAP)continue;
-                    for(bool prom:{false,true}) {Move m{from,d.to,0,prom};if(!q.legal(m))continue;
+                    for(bool prom:{false,true}) {Move m{from,d.to,0,prom};if(!q.legal(m,qk0))continue;
                         Board r=q;r.push(m);if(!r.check())continue;
                         if(!wide){if(!has_evasion(r,0))return true;}
                         else {r.remove(0,rem);if(restore)r.add(1,d.drop);if(defenders(r,n))return true;}
