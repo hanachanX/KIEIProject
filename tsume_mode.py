@@ -619,6 +619,9 @@ class AltResultDialog(QDialog):
     def rebuild(self):
         found, unsure, n = self._items()
         t = []
+        if getattr(self, "engine_name", None):
+            t.append(f"【検査に使ったエンジン】{self.engine_name}" + ("　※作意と同じ手数以内で詰む別の王手だけを調べています" if getattr(self, "use_own", False) else ""))
+            t.append("")
         if found:
             t.append(f"【余詰あり】作意（{n}手）以外の手順でも詰みます（{len(found)}か所）。作品として不完全です。")
             nr = sum(1 for f in found if "手順前後" in f[1])
@@ -668,13 +671,18 @@ class AltResultDialog(QDialog):
         job = {"stop": False, "done": False, "text": "調べ直しています…", "res": None}
         self.job = job
         win = self.win
+        own = bool(getattr(self, "use_own", False))
 
         def work():
             try:
+                if own:
+                    rk = lambda s, m, u=None: tsume_jissen.own_kh(s, m, u)
+                else:
+                    rk = lambda s, m: win._tsume_kh(s, m)
                 job["res"] = tsume_jissen.alt_retry(
-                    items, lambda s, m: win._tsume_kh(s, m), 30000,
+                    items, rk, 30000,
                     lambda k, i, n: job.__setitem__("text", f"時間切れの王手を調べ直しています… {i}/{n}（作意の{k}手目）"),
-                    lambda: job["stop"])
+                    lambda: job["stop"], len(self.line) if own else None)
             except Exception as e:
                 job["res"] = items
                 job["text"] = "エラー：" + str(e)
@@ -897,13 +905,25 @@ class TsumeDialog(QDialog):
         win = self.win
         line = list(line)
         ms = 5000
+        # 詰将棋用エンジンがKomoringHeightsのときだけそれを使う。それ以外（未設定を含む）は棋慧の自前エンジン。
+        # 水匠などは、攻め方の玉を補わないと動かず、補うと結果が変わりうるので、余詰検査には使わない。
+        try:
+            use_own = not win._oracle_ok()
+        except Exception:
+            use_own = True
+        if use_own:
+            khf = lambda s, m, u=None: tsume_jissen.own_kh(s, m, u)
+            ename = tsume_jissen.own_engine_name()
+        else:
+            khf = lambda s, m: win._tsume_kh(s, m)
+            ename = "KomoringHeights"
 
         def work():
             try:
                 job["out"] = tsume_jissen.alt_along_line(
-                    sfen, line, lambda s, m: win._tsume_kh(s, m), ms,
-                    lambda k, n, i, m: job.__setitem__("text", f"作意の{k}手目（全{n}手）の別の王手を調べています… {i}/{m}"),
-                    lambda: job["stop"], job["tail"])
+                    sfen, line, khf, ms,
+                    lambda k, n, i, m: job.__setitem__("text", f"作意の{k}手目（全{n}手）の別の王手を調べています… {i}/{m}（{ename}）"),
+                    lambda: job["stop"], job["tail"], depth_limit=use_own)
             except Exception as e:
                 job["out"] = []
                 job["text"] = "エラー：" + str(e)
@@ -918,6 +938,8 @@ class TsumeDialog(QDialog):
                 tm.stop()
                 dlg = AltResultDialog(self, win, sfen, line, job["out"], ms, stopped=job["stop"], target=target, tdlg=self,
                                       tail_marks=job["tail"])
+                dlg.use_own, dlg.engine_name = use_own, ename
+                dlg.rebuild()
                 dlg.exec()
 
         tm.timeout.connect(tick)

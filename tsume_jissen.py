@@ -196,6 +196,87 @@ def native_kh(sfen, ms=3000, upto=None, max_n=31):
         T.TIMEOUT = old
 
 
+def own_kh(sfen, ms=3000, upto=None):
+    """棋慧の自前エンジンで詰みを調べる（DLLがあればDLL、無ければPython版）。戻り値は kh と同じ形。
+    攻め方の玉を補わず、詰将棋のルール（無駄合は応手に数えない）で判定する。"""
+    try:
+        import tsume_native as m
+        m._library()
+        import tsume_verify  # noqa: F401
+    except Exception:
+        return py_kh(sfen, ms, upto)
+    return native_kh(sfen, ms, upto)
+
+
+def own_engine_name():
+    try:
+        import tsume_native as m
+        m._library()
+        return "棋慧エンジン（DLL版）"
+    except Exception:
+        return "棋慧エンジン（Python版・遅いので5手前後まで）"
+
+
+def py_kh(sfen, ms=3000, upto=None, max_n=31):
+    """DLLが無いときのPython版（tsume.py）。遅いので、時間が来たら待たずに 'timeout' を返す（裏の計算は手数ごとに止まる）。"""
+    import threading
+    import time as _t
+    import tsume as P
+    try:
+        b0 = shogi.Board(sfen)
+    except Exception:
+        return "error", []
+    if b0.is_check():
+        return "nomate", []
+    b, flipped = to_attacker_black(b0)
+    ak = b.king_squares[shogi.BLACK]
+    if ak is not None:
+        n = shogi.Board(b.sfen())
+        n.remove_piece_at(ak)
+        b = shogi.Board(_plain(n))
+    wk = b.king_squares[shogi.WHITE]
+    if wk is None or b.attackers(shogi.BLACK, wk):
+        return "nomate", []
+    lim = min(upto if upto else max_n, 31)
+    box = {}
+    stop = {"v": False}
+
+    def work():
+        try:
+            found = None
+            for n in range(1, lim + 1, 2):
+                if stop["v"]:
+                    return
+                if P.can_mate(b, n):
+                    found = n
+                    break
+            if found is None:
+                box["r"] = ("nomate", [])
+                return
+            ln = P.principal_line(shogi.Board(b.sfen()), found)
+            if not ln:
+                ln = P.solve(shogi.Board(b.sfen()), found)[:1]
+                if not ln:
+                    box["r"] = ("error", [])
+                    return
+                pv = [m.usi() for m in ln]
+            else:
+                pv = [m.usi() for m in ln]
+            if flipped:
+                pv = [_flip_usi(u) for u in pv]
+            box["r"] = ("mate", pv)
+        except Exception:
+            box["r"] = ("error", [])
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    th.join(max(0.3, ms / 1000.0))
+    if th.is_alive():
+        stop["v"] = True
+        return "timeout", []
+    return box.get("r", ("error", []))
+
+
 def native_unique(sfen, N):
     """初手の余詰を調べる（無駄合を除く）。N手以内で詰む初手のUSIの一覧を返す（唯一なら1個）。"""
     import tsume_verify as V
@@ -279,7 +360,7 @@ def check_unique(sfen, N, kh, judge_kh, gen_checks, ms=3000):
     return wins
 
 
-def _eval_check(b, m, kh, ms):
+def _eval_check(b, m, kh, ms, upto=None):
     """盤bで攻方の王手mを指したあと、玉方の全応手の先で詰むかをエンジンに聞く。
     戻り値 (判定, 手数, 手順)。判定は 'mate' / 'no' / 'unsure'。手順は、玉方がいちばん粘る応手の先まで含めたUSIのリスト"""
     _t = _backend()
@@ -294,7 +375,7 @@ def _eval_check(b, m, kh, ms):
         for d in evs:
             b.push(d)
             try:
-                st, pv = kh(b.sfen(), ms)
+                st, pv = kh(b.sfen(), ms, upto) if upto else kh(b.sfen(), ms)
             finally:
                 b.pop()
             if st == "nomate":
@@ -336,7 +417,7 @@ def _t_is_mate(b):
     return not _t.gen_evasions(b) and b.is_check()
 
 
-def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None, tail_marks=None):
+def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None, tail_marks=None, depth_limit=False):
     """作意の手順に沿って、攻方の各手番で、作意以外の王手が（手数に関係なく）詰むかを調べる。
     戻り値 [(何手目, その局面のSFEN, USI, 'mate' or 'unsure', 全体の詰み手数, その王手からの詰み手順(USIのリスト))]
     手数・手順は詰将棋専用エンジンのもので、無駄合を応手に数えるため、柿木将棋と手数が違うことがある"""
@@ -362,7 +443,8 @@ def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None, tail_marks
                 break
             if progress:
                 progress(k + 1, len(line), i + 1, len(checks))
-            v, n, ln = _eval_check(b, m, kh, ms)
+            up = (len(line) - k - 2) if depth_limit else None      # 自前エンジン用：作意と同じ手数以内で詰むかだけを調べる
+            v, n, ln = _eval_check(b, m, kh, ms, up)
             if v == "mate" and tail_marks is not None and _tail_only_alt(before, ln, k, len(line), main_end_hand):
                 tail_marks.add((k + 1, m.usi()))      # 最終3手の変同（同手数・駒余りなし）。画面の設定で余詰に数えるかを選ぶ
             if v in ("mate", "unsure"):
@@ -373,7 +455,7 @@ def alt_along_line(sfen, line, kh, ms=5000, progress=None, stop=None, tail_marks
     return out
 
 
-def alt_retry(items, kh, ms, progress=None, stop=None):
+def alt_retry(items, kh, ms, progress=None, stop=None, line_len=None):
     """時間切れだった王手だけを、長い時間で調べ直す。items は alt_along_line の戻りのうち 'unsure' のもの。
     戻り値は同じ形のリスト（まだ判定できなければ 'unsure' のまま）。詰まないと分かったものは入らない"""
     out = []
@@ -384,7 +466,8 @@ def alt_retry(items, kh, ms, progress=None, stop=None):
         if progress:
             progress(k, j + 1, len(items))
         b = shogi.Board(before)
-        v, n, ln = _eval_check(b, shogi.Move.from_usi(u), kh, ms)
+        up = (line_len - k - 1) if line_len else None
+        v, n, ln = _eval_check(b, shogi.Move.from_usi(u), kh, ms, up)
         if v == "mate":
             out.append((k, before, u, "mate", (k - 1) + n, ln))
         elif v == "unsure":
