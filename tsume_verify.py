@@ -147,6 +147,10 @@ def tree(sfen, first_moves, total, out=print, fmt=None):
 import time as _time
 import threading as _threading
 CANCEL = T.CancelEvent()
+# 詳細検討で、df-pn（詰み問合せ）による「先に試す手」の登録を始めるまでの待ち時間（秒）。
+# 先に棋慧エンジンだけで試し、この時間で終わらない難しい問題のときだけ df-pn を使う。
+# 簡単な問題では df-pn の時間が丸ごと無駄になる（玉方の持駒が多いと df-pn は特に遅い）ため。0 なら従来どおり最初から使う。
+PRIME_AFTER = 6.0
 PROGRESS = None                # アプリが設定する、途中経過を受け取る関数（文字列を受け取る）。None なら何もしない
 
 
@@ -531,15 +535,43 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
     T.TIMEOUT = max(1.0, time_limit)
     deadline = _time.time() + time_limit
     try:
-        try:      # 先に試す手を登録して、読む順番を良くする（結果は変わらない）：df-pnで見つけた手順と、直した手順
-            T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
-            if hint_line:
-                T.hint_line(sfen, list(hint_line))
-            T.hint_line(sfen, list(pv))       # 今から確かめる手順そのものも、先に試す手にする（shtsume などの手順が速く確かめられる）
-        except Exception:
-            pass
+        def _register(use_prime):
+            # 先に試す手を登録して、読む順番を良くする（結果は変わらない）：df-pnで見つけた手順と、直した手順
+            try:
+                if use_prime:
+                    T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
+                if hint_line:
+                    T.hint_line(sfen, list(hint_line))
+                T.hint_line(sfen, list(pv))       # 今から確かめる手順そのものも、先に試す手にする（shtsume などの手順が速く確かめられる）
+            except Exception:
+                pass
         q = shogi.Board(sfen); q.push_usi(pv[0])
-        N = _exact_length(q, L, deadline)
+        N = None
+        first = min(PRIME_AFTER, max(1.0, time_limit / 4.0)) if PRIME_AFTER > 0 else 0.0
+        if first <= 0:
+            _register(True)
+            N = _exact_length(q, L, deadline)
+        else:
+            # まず df-pn なしで、短い時間だけ試す。簡単な問題はここで終わる（df-pn の待ち時間がかからない）
+            _register(False)
+            soft = _time.time() + first
+            T.TIMEOUT = max(1.0, first)
+            slow = False
+            try:
+                N = _exact_length(q, L, soft)
+                if N is None and _time.time() >= soft:
+                    slow = True
+            except ValueError as e:
+                if "timeout" not in str(e):
+                    raise
+                slow = True
+            finally:
+                T.TIMEOUT = max(1.0, time_limit)
+            if slow:
+                # 終わらなかった（難しい問題）：df-pn で見つけた手順を「先に試す手」に登録して、やり直す
+                _note("難しい問題なので、詰み問合せ（df-pn）で下調べ中")
+                _register(True)
+                N = _exact_length(q, L, deadline)
         if N is None:
             res["state"] = "timeout"; res["msg"] = "時間内に確認できませんでした。"
             return res
