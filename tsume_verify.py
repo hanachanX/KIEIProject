@@ -877,11 +877,23 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
         N = None
         fallback = []
         pre = None          # 詰みを確認した直後（記憶が温かいうち）に作っておいた、手順と余詰の確認結果
-        try:      # df-pn（詰み問合せ）の結果を、精密な探索が先に試す手として登録する（結果は変わらず、読む順番が良くなって速くなる）
-            _say("詰み問合せ（df-pn）で見当をつけています")
-            T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
-        except Exception:
-            pass
+        primed = False
+
+        def _prime_now():
+            # df-pn（詰み問合せ）の結果を、精密な探索が先に試す手として登録する（結果は変わらず、読む順番が良くなって速くなる）
+            nonlocal primed
+            primed = True
+            try:
+                _say("難しい問題なので、詰み問合せ（df-pn）で見当をつけています")
+                T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
+            except Exception:
+                pass
+
+        # 簡単な問題では df-pn の時間が丸ごと無駄になる（玉方の持駒が多いと df-pn は特に遅い）ため、
+        # まず棋慧エンジンだけで PRIME_AFTER 秒だけ試し、終わらないときだけ df-pn を使う。0 以下なら従来どおり最初から使う。
+        prime_at = t0 + min(PRIME_AFTER, max(1.0, time_limit / 4.0)) if PRIME_AFTER > 0 else t0
+        if PRIME_AFTER <= 0:
+            _prime_now()
         n = 1
         while n <= max_n:
             if CANCEL.is_set():
@@ -891,10 +903,18 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
             if left <= 0:
                 res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
                 return res
+            if not primed and _time.time() >= prime_at:
+                _prime_now()
+                left = deadline - _time.time()
+                if left <= 0:
+                    continue
             T.TIMEOUT = max(1.0, left)
+            if not primed:
+                T.TIMEOUT = max(1.0, min(left, prime_at - _time.time()))     # df-pn を使うまでの短い制限
             _say(f"{n}手詰を探索中（{res['upto']}手まで不詰確認）")
             try:
                 if T.can_mate(b, n):
+                    T.TIMEOUT = max(1.0, deadline - _time.time())            # 短い制限を戻す（以降の手順の組み立てなどに十分な時間を使う）
                     N = n
                     _say(f"{n}手詰を確認。短い手数を再確認中")
                     try:      # 詰む初手を、キャッシュが温かいうちに先に1つ取っておく（後の検算でキャッシュが消えるため）
@@ -945,6 +965,8 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
                 if CANCEL.is_set():
                     res["state"] = "skip"; res["msg"] = f"中断しました（{res['upto']}手までは詰まないことを確認しました）。"
                     return res
+                if not primed and N is None and deadline - _time.time() > 0:
+                    continue          # df-pn を使うまでの短い制限に当たっただけ：df-pn を使って、同じ手数からやり直す
                 res["state"] = "timeout"; res["msg"] = f"時間内に解けませんでした（{res['upto']}手までは詰まないことを確認しました）。"
                 return res
             res["upto"] = n
