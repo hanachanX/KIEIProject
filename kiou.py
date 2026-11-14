@@ -16,43 +16,45 @@ def _norm(ch):
 
 
 # ---------------------------------------------------------------- 盤の位置
-def _best_progression(score, smin, smax, step_size=0.25):
-    """10本の等間隔の線の位置(開始,間隔)を、線らしさの合計が最大になるように探す。"""
-    n = len(score)
-    cs = np.convolve(score, np.ones(5), "same")
-    best = (-1.0, 0, 0)
-    k = np.arange(10)
-    for step in np.arange(smin, smax, step_size):
-        top = int(n - 9 * step - 1)
-        if top <= 0:
-            break
-        starts = np.arange(0, top)
-        idx = np.rint(starts[:, None] + step * k[None, :]).astype(int)
-        sel = cs[idx]
-        v = sel.sum(axis=1) + 4 * sel.min(axis=1)       # 10本とも強い線であることを重視する
-        j = int(v.argmax())
-        if v[j] > best[0]:
-            best = (float(v[j]), int(starts[j]), float(step))
-    return best
-
-
 def find_grid(img):
     """盤の升目の線から (左端x, 上端y, 升の幅, 升の高さ) を求める。画面の大きさが違っても見つかる。"""
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    dark = (g < 120).astype(np.uint8) * 255
-    hl = cv2.morphologyEx(dark, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (150, 1)))
-    vl = cv2.morphologyEx(dark, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 150)))
-    rows = (hl > 0).sum(axis=1).astype(float)
-    cols = (vl > 0).sum(axis=0).astype(float)
-    ratio = CELL_H / CELL_W
-    best = None
-    for sx in np.arange(40, 170, 0.5):                      # 升の幅を変えながら、縦線と横線の合計点が最大の組を探す
-        vx, x0, _ = _best_progression(cols, sx, sx + 0.01)
-        vy, y0, sy = _best_progression(rows, sx * ratio * 0.96, sx * ratio * 1.04, 0.25)
-        if best is None or vx + vy > best[0]:
-            best = (vx + vy, x0, y0, sx, sy)
-    _, x0, y0, sx, sy = best
-    return float(x0), float(y0), float(sx), float(sy)
+    if img is None or img.ndim != 3 or min(img.shape[:2]) < 100:
+        raise ValueError("棋桜の盤が見つかりませんでした")
+    # 盤の木地を先に囲い、背景の枠や文字が格子へ投票しないようにする。
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    wood = cv2.inRange(hsv, (8, 100, 110), (40, 255, 255))
+    wood = cv2.morphologyEx(wood, cv2.MORPH_OPEN, np.ones((15, 15), np.uint8))
+    wood = cv2.morphologyEx(wood, cv2.MORPH_CLOSE, np.ones((25, 25), np.uint8))
+    contours, _ = cv2.findContours(wood, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 250 or not 1.02 < h / w < 1.22 or cv2.contourArea(contour) < .75 * w * h:
+            continue
+        g = cv2.cvtColor(img[y:y+h, x:x+w], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        # 周辺より暗い細線を評価。線の絶対的な明るさには依存しない。
+        vertical = np.maximum(cv2.blur(g, (11, 1)) - g, 0)
+        horizontal = np.maximum(cv2.blur(g, (1, 11)) - g, 0)
+        cols = np.minimum(vertical, 40).mean(axis=0)
+        rows = np.minimum(horizontal, 40).mean(axis=1)
+        def fit(score, extent):
+            best = None
+            for start in np.arange(0, extent * .035, .5):
+                for end in np.arange(extent * .965, extent, .5):
+                    step = (end - start) / 9
+                    indices = np.rint(start + np.arange(10) * step).astype(int)
+                    values = score[np.minimum(indices, len(score)-1)]
+                    value = float(values.mean() + values.min())
+                    if best is None or value > best[0]:
+                        best = (value, start, step, float(values.min()))
+            return best
+        vx, x0, sx, xmin = fit(cols, w)
+        vy, y0, sy, ymin = fit(rows, h)
+        if xmin > 1.0 and ymin > 1.0 and 1.04 < sy / sx < 1.17:
+            candidates.append((vx + vy, (x + x0, y + y0, sx, sy)))
+    if candidates:
+        return tuple(float(v) for v in max(candidates)[1])
+    raise ValueError("棋桜の盤の格子を確認できませんでした。盤全体が写った画像を使ってください")
 
 
 # ---------------------------------------------------------------- 特徴量
@@ -86,11 +88,13 @@ def cell_at(img, grid, r, c):
 
 
 def _red_score(cell):
-    """升の外周がどれだけ赤(直前の手の印)か。駒に隠れにくい外周だけを見る。"""
+    """赤い矩形のうち、駒で隠れても残る3辺の連続性を評価する。"""
     cl = cell.astype(int)
-    ring = np.concatenate([cl[:5].reshape(-1, 3), cl[-5:].reshape(-1, 3)])
-    m = (ring[:, 2] > 225) & (ring[:, 1] < 135) & (ring[:, 0] < 95)
-    return float(m.mean())
+    m = (cl[:, :, 2] > 225) & (cl[:, :, 1] < 135) & (cl[:, :, 0] < 95)
+    edges = [m[:5].max(axis=0).mean(), m[-5:].max(axis=0).mean(),
+             m[:, :5].max(axis=1).mean(), m[:, -5:].max(axis=1).mean()]
+    # 1辺だけに広がる紅葉や、散在する赤画素は枠として採用しない。
+    return float(sorted(edges)[1])
 
 
 # ---------------------------------------------------------------- 持ち駒
@@ -138,7 +142,9 @@ def digit_glyph(img, box):
     _, x, y, w, h = box
     xa, xb, ya, yb = x + w - 26, x + w + 36, max(y - 20, 0), y + h + 20
     reg = img[ya:yb, max(xa, 0):xb]
-    m = (reg.min(axis=2) > 215).astype(np.uint8)
+    # 縮小画像の白文字には灰色の縁が残る。明るさだけでなく無彩色も確認する。
+    colors = reg.astype(np.int16)
+    m = ((colors.min(axis=2) > 180) & (np.ptp(colors, axis=2) < 55)).astype(np.uint8)
     n, lab, st, cen = cv2.connectedComponentsWithStats(m)
     best = None
     for s in st[1:]:
@@ -217,7 +223,11 @@ def with_rotations(T):
 def classify(m, T):
     if m[0].sum() + m[1].sum() < 0.03 * m[0].size:
         return None, 1.0, 1.0
-    sc = sorted(((_cos(m, t), k) for k, t in T.items() if not k.startswith(("plate_", "digit_", "hand_"))), reverse=True)
+    shifted = [cv2.warpAffine(m.transpose(1, 2, 0),
+               np.float32([[1, 0, dx], [0, 1, dy]]), (32, 36)).transpose(2, 0, 1)
+               for dx in range(-1, 2) for dy in range(-1, 2)]
+    sc = sorted(((max(_cos(s, t) for s in shifted), k) for k, t in T.items()
+                 if not k.startswith(("plate_", "digit_", "hand_"))), reverse=True)
     return sc[0][1], sc[0][0] - sc[1][0], sc[0][0]
 
 
@@ -229,7 +239,7 @@ def read_board_image(img, T=None, min_margin=0.02):
     if abs(grid[2] - CELL_W) > 1.0 and grid[2] > 0:      # 画面の大きさが違うときは、見本と同じ大きさに縮尺をそろえる
         k = CELL_W / grid[2]
         img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_CUBIC)
-        grid = find_grid(img)
+        grid = tuple(v * k for v in grid)
     notes = []
     cells = [[""] * 9 for _ in range(9)]
     last, red_best = None, 0.0
@@ -240,14 +250,14 @@ def read_board_image(img, T=None, min_margin=0.02):
             if cl.size == 0:
                 continue
             rs = _red_score(cl)
-            if rs > 0.08 and rs > red_best:
+            if rs > 0.45 and rs > red_best:
                 red_best, last = rs, {"row": r + 1, "col": c + 1}
             k, mg, best = classify(ink_map(cl), T)
             if k:
                 scores.append(best)
                 cells[r][c] = k
-                if mg < min_margin:
-                    notes.append(f"{r + 1}行目・{c + 1}列目の「{k[:-1]}」は自信がありません(差 {mg:.2f})")
+                if mg < min_margin or best < 0.70:
+                    notes.append(f"{r + 1}行目・{c + 1}列目の「{k[:-1]}」は自信がありません(一致度 {best:.2f}、差 {mg:.2f})")
     if not (6 <= len(scores) <= 42) or float(np.median(scores)) < 0.65:
         raise ValueError("棋桜の対局画面として読み取れませんでした（盤が見つからないか、別のゲーム・サイトの画面です）。"
                          "この読み取りは棋桜専用です。")
