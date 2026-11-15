@@ -3,13 +3,17 @@
 import json
 import os
 import random
+import re
+import tempfile
+import unicodedata
 import threading
 
 import shogi
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QTableWidget, QTableWidgetItem, QAbstractItemView, QVBoxLayout,
-                             QHeaderView)
+                             QHeaderView, QStyledItemDelegate, QSpinBox, QMessageBox)
+from ui_widgets import QPushButton
 
 try:                        # C++版（native_tsume/tsume.dll）があれば高速版、無ければ従来のPython版を使う
     import tsume_native as solver
@@ -139,7 +143,19 @@ def sfen_key(sfen):
 def db_load(path):
     if not os.path.exists(path):
         return []
-    out = _read_jsonl(path)
+    # DB本体の壊れた行を読み飛ばすと、次の保存で問題が消えるため中断する。
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict) or not all(k in record for k in ("id", "title", "sfen")):
+                    raise ValueError("問題の必須項目がありません")
+                out.append(record)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"DBの{lineno}行目を読み込めません: {exc}") from exc
     for p in out:
         p.setdefault("line", None)
         p.setdefault("difficulty", None)
@@ -153,11 +169,20 @@ def db_load(path):
 
 
 def db_save(path, probs):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        for p in probs:
-            fh.write(json.dumps(p, ensure_ascii=False) + "\n")
-    os.replace(tmp, path)
+    path = os.fspath(path)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(os.path.abspath(path)),
+                                         prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False) as fh:
+            name = fh.name
+            for p in probs:
+                fh.write(json.dumps(p, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(name, path)
+    finally:
+        if name and os.path.exists(name):
+            os.unlink(name)
 
 
 def db_merge(db, new):
@@ -742,6 +767,51 @@ class AltResultDialog(QDialog):
 
 
 # ====================================================================== 一覧ダイアログ
+def natural_key(value):
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return tuple((1, int(t)) if t.isdecimal() else (0, t) for t in re.split(r"(\d+)", text) if t)
+
+
+def problem_number(p):
+    return p.get("number") or p.get("no") or p.get("title") or p.get("id", "")
+
+
+class ProblemItem(QTableWidgetItem):
+    def __lt__(self, other):
+        return self.data(Qt.ItemDataRole.UserRole + 1) < other.data(Qt.ItemDataRole.UserRole + 1)
+
+
+class InfoDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        dialog = self.parent()
+        if index.column() in (4, 8):
+            editor = dialog.value_combo("author" if index.column() == 4 else "src", parent)
+            return editor
+        if index.column() == 3:
+            editor = QSpinBox(parent)
+            editor.setRange(0, 9)
+            editor.setSpecialValueText("なし")
+            return editor
+        return super().createEditor(parent, option, index)
+
+    def setEditorData(self, editor, index):
+        value = index.data(Qt.ItemDataRole.EditRole)
+        if isinstance(editor, QComboBox):
+            editor.setCurrentText(str(value or ""))
+        elif isinstance(editor, QSpinBox):
+            editor.setValue(int(value or 0))
+        else:
+            super().setEditorData(editor, index)
+
+    def setModelData(self, editor, model, index):
+        if isinstance(editor, QComboBox):
+            model.setData(index, editor.currentText(), Qt.ItemDataRole.EditRole)
+        elif isinstance(editor, QSpinBox):
+            model.setData(index, editor.value() or "", Qt.ItemDataRole.EditRole)
+        else:
+            super().setModelData(editor, model, index)
+
+
 class TsumeDialog(QDialog):
     def __init__(self, win, dbpath, state):
         super().__init__(win)
@@ -751,7 +821,7 @@ class TsumeDialog(QDialog):
         self.shown = []
         self.dbpath = dbpath
         self.setWindowTitle("詰将棋 問題一覧")
-        self.resize(760, 640)
+        self.resize(1100, 640)
         v = QVBoxLayout(self)
         top = QHBoxLayout()
         self.path_label = QLabel("")
@@ -792,7 +862,7 @@ class TsumeDialog(QDialog):
         self.ck_ready = QCheckBox("正解データ有りのみ")
         self.ck_hidden = QCheckBox("外したものも表示")
         self.ed = QLineEdit()
-        self.ed.setPlaceholderText("タイトル・作者・メモで検索")
+        self.ed.setPlaceholderText("タイトル・作者・出典・メモで検索")
         for w in (self.cb_steps, self.cb_diff):
             w.currentIndexChanged.connect(self.apply_filter)
         for w in (self.ck_unsolved, self.ck_ready, self.ck_hidden):
@@ -802,16 +872,21 @@ class TsumeDialog(QDialog):
             fl.addWidget(w)
         fl.addWidget(self.ed, 1)
         v.addLayout(fl)
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["No", "タイトル", "手数", "難易度", "作者", "状態", "評価", "メモ"])
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels(["No", "タイトル", "手数", "難易度", "作者", "状態", "評価", "メモ", "出典"])
         self.table.setColumnWidth(7, 220)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self.table.setItemDelegate(InfoDelegate(self))
+        self.table.itemChanged.connect(self.edit_cell)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 220)
+        self.table.setColumnWidth(8, 180)
+        self.table.horizontalHeader().setSortIndicator(8, Qt.SortOrder.AscendingOrder)
         self.table.setSortingEnabled(True)
-        self.table.cellDoubleClicked.connect(lambda r, c: self.start_selected())
+        self.table.cellClicked.connect(lambda r, c: self.start_selected())
         v.addWidget(self.table, 1)
         self.count = QLabel("")
         v.addWidget(self.count)
@@ -823,7 +898,7 @@ class TsumeDialog(QDialog):
             b.clicked.connect(lambda _c=False, n=n: self.rate(n))
             rl.addWidget(b)
         rl.addStretch(1)
-        be = QPushButton("タイトル・作者・難易度・メモを編集…")
+        be = QPushButton("タイトル・作者・出典・難易度・メモを編集…")
         be.setToolTip("選んだ問題（または出題中の問題）のタイトル・作者・難易度・メモ（余詰の注意・制作日などの雑メモ）を書き換えます")
         be.clicked.connect(self.edit_info)
         rl.addWidget(be)
@@ -1033,24 +1108,73 @@ class TsumeDialog(QDialog):
                 continue
             if self.ck_ready.isChecked() and not p["line"]:
                 continue
-            if kw and kw not in p["title"] and kw not in p["author"] and kw not in (p.get("memo") or ""):
+            if kw and kw not in p["title"] and kw not in p["author"] and kw not in (p.get("memo") or "") and kw not in (p.get("src") or ""):
                 continue
             out.append(p)
+        selected = self.selected_prob()
         self.shown = out
+        self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(out))
         for r, p in enumerate(out):
             vals = [r + 1, p["title"], p["steps"], p["difficulty"] if p["difficulty"] is not None else "",
                     p["author"], self.status_of(p), "★" * (p.get("stars", 0) or 0) or "－",
-                    (p.get("memo") or "").replace("\n", " ")]
+                    p.get("memo") or "", p.get("src") or ""]
             for c, val in enumerate(vals):
-                it = QTableWidgetItem()
+                it = ProblemItem()
                 it.setData(Qt.ItemDataRole.DisplayRole, val)
+                key = (natural_key(val), natural_key(p.get("src")), natural_key(problem_number(p)))
+                if c == 8:
+                    key = (natural_key(val), natural_key(problem_number(p)), natural_key(p.get("id")))
+                it.setData(Qt.ItemDataRole.UserRole + 1, key)
+                if c not in (1, 3, 4, 7, 8):
+                    it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if c == 0:
                     it.setData(Qt.ItemDataRole.UserRole, r)
                 self.table.setItem(r, c, it)
         self.table.setSortingEnabled(True)
+        self.table.blockSignals(False)
+        if selected and selected in out:
+            self._select(selected)
         self.count.setText(f"{len(out)}問を表示　（解いた {sum(1 for p in out if self.state['solved'].get(p['id']))}問）")
+
+    def value_combo(self, field, parent=None):
+        combo = QComboBox(parent)
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        combo.addItem("")
+        combo.addItems(sorted({str(p.get(field) or "") for p in self.probs} - {""}, key=natural_key))
+        combo.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        return combo
+
+    def update_info(self, p, changes):
+        old = dict(p)
+        p.update(changes)
+        try:
+            db_save(self.dbpath, self.probs)
+        except Exception as exc:
+            p.clear()
+            p.update(old)
+            QMessageBox.warning(self, "保存できません", str(exc))
+            self.apply_filter()
+            return False
+        self.apply_filter()
+        self.win.status.setText(f"「{p['title']}」の情報を更新しました")
+        return True
+
+    def edit_cell(self, item):
+        fields = {1: "title", 3: "difficulty", 4: "author", 7: "memo", 8: "src"}
+        field = fields.get(item.column())
+        if field is None:
+            return
+        p = self.shown[self.table.item(item.row(), 0).data(Qt.ItemDataRole.UserRole)]
+        value = item.text().strip()
+        if field == "difficulty":
+            value = int(value) if value else None
+        elif field == "title" and not value:
+            value = p.get("title", "")
+        if p.get(field) != value:
+            self.update_info(p, {field: value})
 
     def selected_prob(self):
         r = self.table.currentRow()
@@ -1071,9 +1195,7 @@ class TsumeDialog(QDialog):
             return
         p["stars"] = n
         db_save(self.dbpath, self.probs)
-        for r in range(self.table.rowCount()):
-            if self.shown[self.table.item(r, 0).data(Qt.ItemDataRole.UserRole)]["id"] == p["id"]:
-                self.table.item(r, 6).setText("★" * n or "－")
+        self.apply_filter()
         self.win.status.setText(f"「{p['title']}」を {'未評価' if n == 0 else '★' * n} にしました")
 
     def _line_problem(self, sfen, line):
@@ -1205,13 +1327,17 @@ class TsumeDialog(QDialog):
         dlg.setWindowTitle("問題の情報を編集")
         form = QFormLayout(dlg)
         ed_t = QLineEdit(p.get("title") or "")
-        ed_a = QLineEdit(p.get("author") or "")
+        ed_a = self.value_combo("author", dlg)
+        ed_a.setCurrentText(p.get("author") or "")
+        ed_src = self.value_combo("src", dlg)
+        ed_src.setCurrentText(p.get("src") or "")
         sp = QSpinBox()
         sp.setRange(0, 9)
         sp.setSpecialValueText("なし")
         sp.setValue(p.get("difficulty") or 0)
         form.addRow("タイトル", ed_t)
         form.addRow("作者", ed_a)
+        form.addRow("出典", ed_src)
         form.addRow("難易度", sp)
         ed_m = QPlainTextEdit(p.get("memo") or "")
         ed_m.setPlaceholderText("例：9手目に別解あり（最終手は不問）／2026-10-29 制作")
@@ -1223,13 +1349,9 @@ class TsumeDialog(QDialog):
         form.addRow(bb)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        p["title"] = ed_t.text().strip() or p.get("title") or ""
-        p["author"] = ed_a.text().strip()
-        p["difficulty"] = sp.value() or None
-        p["memo"] = ed_m.toPlainText().strip()
-        db_save(self.dbpath, self.probs)
-        self.apply_filter()
-        self.win.status.setText(f"「{p['title']}」の情報を更新しました")
+        self.update_info(p, {"title": ed_t.text().strip() or p.get("title") or "",
+                             "author": ed_a.currentText().strip(), "src": ed_src.currentText().strip(),
+                             "difficulty": sp.value() or None, "memo": ed_m.toPlainText().strip()})
 
     def toggle_hidden(self):
         """選んだ問題を一覧から外す（データは消さない）。外したものは「外したものも表示」で出して、戻せる。"""
