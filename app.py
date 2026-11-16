@@ -842,6 +842,15 @@ def apply_cache_cap(cfg):
 
 
 # ====================================================================== メイン画面
+def _search_count_text(stats):
+    if not stats or "nodes" not in stats:
+        return ""
+    seconds = stats.get("search_seconds", 0)
+    nodes = stats["nodes"]
+    nps = int(nodes / seconds) if seconds > 0 else 0
+    return f"探索局面数 {nodes:,}（{nps:,}NPS）"
+
+
 class Sig(QObject):
     cands = pyqtSignal(int, list, bool)
     senkei = pyqtSignal(int, str)
@@ -856,6 +865,7 @@ class Sig(QObject):
     alt_line_done = pyqtSignal(object)   # 変化の一覧：手順を展開した結果
     kiei_prog = pyqtSignal(str)       # 「棋慧で解く」の途中経過（画面下の表示用）
     quick_done = pyqtSignal(object)   # 「詰み問合せ」の結果
+    quick_progress = pyqtSignal(object)  # 探索スレッドからの進捗通知
     game_prog = pyqtSignal(str, int, object)
     game_done = pyqtSignal(str, bool)
     game_err = pyqtSignal(str)
@@ -1041,6 +1051,7 @@ class MainWindow(QMainWindow):
         self.sig.mate.connect(self.on_mate)
         self.sig.verify.connect(self.on_verify)
         self.sig.quick_done.connect(self.on_quick_done)
+        self.sig.quick_progress.connect(self._on_quick_progress)
         self.sig.alt_line_done.connect(self.on_alt_line_done)
         self.sig.kiei_prog.connect(lambda s: self.status.setText(s) if (getattr(self, "_kiei_running", False) or getattr(self, "_prog_active", False)) else None)
         self.sig.game_prog.connect(self.on_game_prog)
@@ -2958,12 +2969,18 @@ class MainWindow(QMainWindow):
 
         def work():
             t0 = time.time()
+            import tsume_native
+            meter = tsume_native.SearchProgress()
+            try:
+                meter.__enter__()
+            except Exception:
+                pass  # Statistics are optional; preserve the existing solver error handling.
             prog = {"text": "棋慧で解いています", "done": False}
 
             def ticker():                  # 1秒ごとに、途中経過と経過時間を画面に出す
                 while not prog["done"]:
                     if not tsume_verify.CANCEL.is_set():
-                        self.sig.kiei_prog.emit(f"{prog['text']}　{int(time.time() - t0)}秒")
+                        self.sig.kiei_prog.emit(f"{prog['text']}　{time.time() - t0:.1f}秒　" + _search_count_text(meter.snapshot()))
                     time.sleep(1.0)
             threading.Thread(target=ticker, daemon=True).start()
             try:
@@ -2986,6 +3003,8 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 res, pv = {"state": "error", "msg": str(e), "sec": 0.0}, []
             prog["done"] = True
+            res["search_stats"] = meter.snapshot()
+            meter.close()
             res["sec"] = time.time() - t0
             res["by_kiei"] = True
             res["kind"], res["sfen"], res["pv"] = "alt", sfen, pv
@@ -3003,13 +3022,26 @@ class MainWindow(QMainWindow):
             return
         sfen = self.cur_board.sfen()
         lim = float(int(self.cfg.get("mate_sec", 60)) or 600)
+        if getattr(self, "_quick_running", False):
+            return
+        self._quick_running = True
+        self._quick_request_id = getattr(self, "_quick_request_id", 0) + 1
+        request_id = self._quick_request_id
+        self._quick_started = time.monotonic()
+        self._quick_stats = None
+        if not hasattr(self, "_quick_progress_timer"):
+            self._quick_progress_timer = QTimer(self)
+            self._quick_progress_timer.setInterval(250)
+            self._quick_progress_timer.timeout.connect(self._update_quick_progress)
         self.btn_quick.setEnabled(False)
-        self.status.setText("詰み問合せ中…（df-pn法）")
+        self._update_quick_progress()
+        self._quick_progress_timer.start()
 
         def work():
             t0 = time.time()
             try:
-                state, pv = tsume_native.quick_mate(sfen, lim)
+                state, pv = tsume_native.quick_mate(sfen, lim,
+                    progress=lambda stats: self.sig.quick_progress.emit({**stats, "request_id": request_id}))
                 res = {"state": state, "pv": pv, "msg": ""}
             except Exception as e:
                 m = str(e)
@@ -3021,12 +3053,42 @@ class MainWindow(QMainWindow):
                     res = {"state": "error", "pv": [], "msg": m}
             res["sec"] = time.time() - t0
             res["sfen"] = sfen
+            res["request_id"] = request_id
             self.sig.quick_done.emit(res)
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _on_quick_progress(self, stats):
+        if not getattr(self, "_quick_running", False) or stats.get("request_id") != self._quick_request_id:
+            return
+        self._quick_stats = stats
+        self._update_quick_progress()
+
+    def _update_quick_progress(self):
+        if not getattr(self, "_quick_running", False):
+            return
+        elapsed = max(0.0, time.monotonic() - self._quick_started)
+        stats = self._quick_stats or {}
+        phase = stats.get("phase", 1)
+        label = "手順を構築中" if phase == 2 else ("結果をまとめています" if phase == 0 else "詰み問合せ中")
+        text = f"{label}… {elapsed:.1f}秒"
+        if phase == 1 and "nodes" in stats:
+            nodes = stats["nodes"]
+            search_seconds = stats.get("search_seconds", 0)
+            nps = int(nodes / search_seconds) if search_seconds > 0 else 0
+            text += f"　探索局面数 {nodes:,}（{nps:,}NPS）"
+        self.status.setText(text)
+
     def on_quick_done(self, r):
+        if r.get("request_id", getattr(self, "_quick_request_id", 0)) != getattr(self, "_quick_request_id", 0):
+            return
+        self._quick_running = False
+        if hasattr(self, "_quick_progress_timer"):
+            self._quick_progress_timer.stop()
         self.btn_quick.setEnabled(True)
+        summary = _search_count_text(getattr(self, "_quick_stats", None))
+        suffix = ("　" + summary) if summary else ""
+        set_status = lambda text: self.status.setText(text + suffix)
         sec = r.get("sec", 0.0)
         st = r.get("state")
         if st == "mate":
@@ -3043,23 +3105,23 @@ class MainWindow(QMainWindow):
                 line = core.pv_ja(shogi.Board(r["sfen"]), pv, 40)
             except Exception:
                 line = " ".join(pv)
-            self.status.setText(f"詰み問合せ：詰みあり（{sec:.1f}秒）。手順の一例を「詰み手順を盤へ」で取り込めます")
+            set_status(f"詰み問合せ：詰みあり（{sec:.1f}秒）。手順の一例を「詰み手順を盤へ」で取り込めます")
             QMessageBox.information(
                 self, "詰み問合せの結果",
-                f"詰みがあります（{sec:.1f}秒）。\n\n手順の一例（{len(pv)}手）：\n{line}\n\n"
+                f"詰みがあります（{sec:.1f}秒）。{suffix}\n\n手順の一例（{len(pv)}手）：\n{line}\n\n"
                 "※df-pn法による簡易な結果です。玉方がなるべく粘る手順を選んでいますが、無駄合を含むため、実際の詰み手数より長く出ることがあります。"
                 "最短の手数・無駄合の有無・変化は調べていません。正確に調べるときは「棋慧で解く」を使ってください。")
         elif st == "nomate":
-            self.status.setText(f"詰み問合せ：詰みは見つかりませんでした（不詰の可能性が高い・{sec:.1f}秒）")
+            set_status(f"詰み問合せ：詰みは見つかりませんでした（不詰の可能性が高い・{sec:.1f}秒）")
             QMessageBox.information(self, "詰み問合せの結果",
                                     f"手数を区切らずに調べましたが、詰みは見つかりませんでした（{sec:.1f}秒）。\n\n※簡易な判定なので、不詰と断定はできません（まれに、詰む問題を見逃すことがあります）。確実にしたいときは「棋慧で解く」を使ってください。")
         elif st == "timeout":
-            self.status.setText("詰み問合せ：時間切れ")
+            set_status(f"詰み問合せ：時間切れ（{sec:.1f}秒）")
             QMessageBox.information(self, "詰み問合せの結果", "時間内に結論が出ませんでした（設定の「詰み探索の時間」を延ばすと続けられます）。")
         elif st == "unknown":
-            self.status.setText("詰み問合せ：結論が出ませんでした")
+            set_status(f"詰み問合せ：結論が出ませんでした（{sec:.1f}秒）")
         else:
-            self.status.setText("詰み問合せでエラー")
+            set_status(f"詰み問合せでエラー（{sec:.1f}秒）")
             QMessageBox.warning(self, "詰み問合せ", r.get("msg") or "エラーが起きました。")
 
     def apply_mate_line(self, verified=False):
@@ -3237,11 +3299,17 @@ class MainWindow(QMainWindow):
         def work():
             use_kh = False
             t_v0 = time.time()
+            import tsume_native
+            meter = tsume_native.SearchProgress()
+            try:
+                meter.__enter__()
+            except Exception:
+                pass  # Statistics are optional; preserve the existing solver error handling.
             vprog = {"text": "棋慧で検証中", "done": False}
 
             def v_ticker():                # 1秒ごとに、途中経過と経過時間を画面に出す
                 while not vprog["done"]:
-                    self.sig.kiei_prog.emit(f"{vprog['text']}　{int(time.time() - t_v0)}秒")
+                    self.sig.kiei_prog.emit(f"{vprog['text']}　{time.time() - t_v0:.1f}秒　" + _search_count_text(meter.snapshot()))
                     time.sleep(1.0)
             threading.Thread(target=v_ticker, daemon=True).start()
             tsume_verify.PROGRESS = lambda s: vprog.__setitem__("text", s)
@@ -3293,6 +3361,8 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 res = {"state": "error", "msg": str(e), "sec": 0.0}
             vprog["done"] = True
+            final_stats = meter.snapshot()
+            meter.close()
             tsume_verify.PROGRESS = None
             self._cur_repair = None
             if tsume_verify.CANCEL.is_set() and res.get("state") in ("timeout", "error", "warn", "ok"):
@@ -3306,6 +3376,7 @@ class MainWindow(QMainWindow):
                 tsume_native.set_oracle(None)
             except Exception:
                 pass
+            res["search_stats"] = final_stats
             self.sig.verify.emit(res)
 
         threading.Thread(target=work, daemon=True).start()
@@ -3417,6 +3488,9 @@ class MainWindow(QMainWindow):
             else:
                 h.append("<p>初手は詰将棋エンジンの手を前提にしています（初手の余詰は調べていません）。</p>")
         h.append(f"<p>棋慧エンジンの考慮時間：{sec:.1f}秒</p>")
+        search_summary = _search_count_text(r.get("search_stats"))
+        if search_summary:
+            h.append(f"<p>{esc(search_summary)}</p>")
         _rp = r.get("repair")
         if _rp:
             h.append(f"<p>（手順の組み直し：{_rp['sec']:.1f}秒　直した手順の最終確認：{_rp.get('check_sec', 0.0):.1f}秒）</p>")
@@ -3449,7 +3523,7 @@ class MainWindow(QMainWindow):
             self.result.setHtml("".join(h))
         self.mate_report = (self.start_sfen, self.result.toHtml())
         self.tabs.setCurrentWidget(self.result)
-        self.status.setText(f"{title}：完了（{sec:.1f}秒）")
+        self.status.setText(f"{title}：完了（{sec:.1f}秒）" + (("　" + search_summary) if search_summary else ""))
 
     # ---- 変化の一覧（玉方の別の受けと、その詰み手数）----
     def _alts_html(self):
