@@ -108,14 +108,17 @@ class StyledMessageBox(QMessageBox):
         return super().addButton(*args)
 
 
-DEFAULT_UI_SOUND = "sounds/button.wav"
+DEFAULT_UI_SOUND = "sounds/button01.wav"
 
 
 def selected_ui_sound(config):
     """Migrate the earlier trial filenames to the published button sound."""
     value = config.get("ui_sound", DEFAULT_UI_SOUND)
-    if value in {f"sounds/button_candidate_{number:02d}.wav" for number in range(1, 4)}:
+    if value == "sounds/button.wav":
         return DEFAULT_UI_SOUND
+    for number in range(1, 4):
+        if value == f"sounds/button_candidate_{number:02d}.wav":
+            return f"sounds/button{number:02d}.wav"
     return value
 
 

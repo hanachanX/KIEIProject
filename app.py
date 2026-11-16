@@ -44,12 +44,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 
 
-_piece_sound_path = os.path.join(HERE, "sounds", "komaoto.wav")
+_piece_sound_path = os.path.join(HERE, "sounds", "komaoto01.wav")
+
+
+def selected_piece_sound(config):
+    value = config.get("piece_sound", "sounds/komaoto01.wav")
+    return "sounds/komaoto01.wav" if value == "sounds/komaoto.wav" else value
 
 
 def configure_piece_sound(config):
     global _piece_sound_path
-    value = config.get("piece_sound", "sounds/komaoto.wav")
+    value = selected_piece_sound(config)
     enabled = config.get("piece_sound_enabled", bool(value))
     _piece_sound_path = os.path.join(HERE, value) if enabled and value else None
 
@@ -700,12 +705,14 @@ class SettingsDialog(QDialog):
 
         selected = selected_ui_sound(cfg)
         self.ui_sound_enabled, self.ui_sound_path = self._sound_controls(
-            form, "ボタン音を鳴らす", selected or "sounds/button.wav",
-            cfg.get("ui_sound_enabled", bool(selected)), "sounds/button.wav")
-        selected = cfg.get("piece_sound", "sounds/komaoto.wav")
+            form, "ボタン音を鳴らす", selected or "sounds/button01.wav",
+            cfg.get("ui_sound_enabled", bool(selected)), "sounds/button01.wav",
+            [(f"音{n}", f"sounds/button{n:02d}.wav") for n in range(1, 4)])
+        selected = selected_piece_sound(cfg)
         self.piece_sound_enabled, self.piece_sound_path = self._sound_controls(
-            form, "駒音を鳴らす", selected or "sounds/komaoto.wav",
-            cfg.get("piece_sound_enabled", bool(selected)), "sounds/komaoto.wav")
+            form, "駒音を鳴らす", selected or "sounds/komaoto01.wav",
+            cfg.get("piece_sound_enabled", bool(selected)), "sounds/komaoto01.wav",
+            [("音1（現在の駒音）", "sounds/komaoto01.wav"), ("音2（ぽす）", "sounds/komaoto02.wav")])
 
         self.engine = QLineEdit(cfg.get("engine_path", ""))
         b1 = QPushButton("参照…")
@@ -818,7 +825,7 @@ class SettingsDialog(QDialog):
                 return
         super().accept()
 
-    def _sound_controls(self, form, label, value, enabled, default):
+    def _sound_controls(self, form, label, value, enabled, default, presets):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -826,6 +833,22 @@ class SettingsDialog(QDialog):
         checkbox.setChecked(bool(enabled))
         path = QLineEdit(value)
         path.setPlaceholderText("WAVファイル")
+        choices = QComboBox()
+        for title, filename in presets:
+            choices.addItem(title, filename)
+        choices.addItem("ファイル指定", None)
+        def select_preset(index):
+            filename = choices.itemData(index)
+            if filename:
+                path.setText(filename)
+        def sync_choice(value):
+            index = choices.findData(value)
+            choices.blockSignals(True)
+            choices.setCurrentIndex(index if index >= 0 else choices.count() - 1)
+            choices.blockSignals(False)
+        choices.currentIndexChanged.connect(select_preset)
+        path.textChanged.connect(sync_choice)
+        sync_choice(value)
         browse = QPushButton("参照…")
         reset = QPushButton("標準に戻す")
         preview = QPushButton("試聴")
@@ -834,10 +857,11 @@ class SettingsDialog(QDialog):
         reset.clicked.connect(lambda: path.setText(default))
         preview.clicked.connect(lambda: self._preview_sound(path.text().strip()))
         layout.addWidget(checkbox)
+        layout.addWidget(choices)
         layout.addWidget(path, 1)
         for button in (browse, reset, preview):
             layout.addWidget(button)
-        for control in (path, browse, reset, preview):
+        for control in (choices, path, browse, reset, preview):
             control.setEnabled(bool(enabled))
             checkbox.toggled.connect(control.setEnabled)
         form.addRow(row)
@@ -892,9 +916,9 @@ class SettingsDialog(QDialog):
                 k, v = line.split("=", 1)
                 if k.strip():
                     opts[k.strip()] = v.strip()
-        cfg["ui_sound"] = self.ui_sound_path.text().strip() or "sounds/button.wav"
+        cfg["ui_sound"] = self.ui_sound_path.text().strip() or "sounds/button01.wav"
         cfg["ui_sound_enabled"] = self.ui_sound_enabled.isChecked()
-        cfg["piece_sound"] = self.piece_sound_path.text().strip() or "sounds/komaoto.wav"
+        cfg["piece_sound"] = self.piece_sound_path.text().strip() or "sounds/komaoto01.wav"
         cfg["piece_sound_enabled"] = self.piece_sound_enabled.isChecked()
         cfg.update({"engine_path": self.engine.text().strip(), "engine_options": opts,
                     "tsume_engine_path": self.tengine.text().strip(), "tsume_sec": self.tsec.value(),

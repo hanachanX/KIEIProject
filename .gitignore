@@ -46,7 +46,7 @@ fonts/OFL_ShipporiMincho.txt
 
 解説保存/
 
-# --- ボタン音の元録音・比較用ファイル（公開用は sounds/button.wav） ---
+# --- ボタン音の元録音・比較用ファイル（公開用は button01〜03.wav と komaoto01〜02.wav） ---
 /sounds/UISound.wav
 /sounds/button_candidate_*.wav
 /sounds/ui_candidates_*/
