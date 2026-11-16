@@ -162,5 +162,5 @@ def configure_ui_sound(config, base_dir):
         controller = _ButtonSounds(application)
         application._kiei_button_sounds = controller
     value = selected_ui_sound(config)
-    path = Path(value) if value else None
+    path = Path(value) if value and config.get("ui_sound_enabled", True) else None
     controller.path = (Path(base_dir) / path).resolve() if path is not None else None

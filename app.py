@@ -44,16 +44,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 
 
+_piece_sound_path = os.path.join(HERE, "sounds", "komaoto.wav")
+
+
+def configure_piece_sound(config):
+    global _piece_sound_path
+    value = config.get("piece_sound", "sounds/komaoto.wav")
+    enabled = config.get("piece_sound_enabled", bool(value))
+    _piece_sound_path = os.path.join(HERE, value) if enabled and value else None
+
+
 def play_piece_sound():
-    """Play the short piece sound without blocking board interaction."""
-    try:
-        import winsound
-        winsound.PlaySound(
-            os.path.join(HERE, "sounds", "komaoto.wav"),
-            winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
-        )
-    except (ImportError, OSError, RuntimeError):
-        pass
+    """Use the selected piece WAV for board moves and move navigation."""
+    play_ui_sound(_piece_sound_path)
+
 
 _FONTS = {}
 
@@ -694,19 +698,14 @@ class SettingsDialog(QDialog):
         opts = dict(cfg.get("engine_options", {}))
         form = QFormLayout(self)
 
-        self.ui_sound = QComboBox()
-        self.ui_sound.addItem("音なし", "")
-        self.ui_sound.addItem("標準", "sounds/button.wav")
         selected = selected_ui_sound(cfg)
-        index = self.ui_sound.findData(selected)
-        if index < 0:
-            self.ui_sound.addItem("現在の音", selected)
-            index = self.ui_sound.count() - 1
-        self.ui_sound.setCurrentIndex(index)
-        preview = QPushButton("試聴")
-        preview.setProperty("uiSoundSkip", True)
-        preview.clicked.connect(lambda: play_ui_sound(os.path.join(HERE, self.ui_sound.currentData())) if self.ui_sound.currentData() else None)
-        form.addRow("ボタン音", self._row(self.ui_sound, preview))
+        self.ui_sound_enabled, self.ui_sound_path = self._sound_controls(
+            form, "ボタン音を鳴らす", selected or "sounds/button.wav",
+            cfg.get("ui_sound_enabled", bool(selected)), "sounds/button.wav")
+        selected = cfg.get("piece_sound", "sounds/komaoto.wav")
+        self.piece_sound_enabled, self.piece_sound_path = self._sound_controls(
+            form, "駒音を鳴らす", selected or "sounds/komaoto.wav",
+            cfg.get("piece_sound_enabled", bool(selected)), "sounds/komaoto.wav")
 
         self.engine = QLineEdit(cfg.get("engine_path", ""))
         b1 = QPushButton("参照…")
@@ -812,6 +811,61 @@ class SettingsDialog(QDialog):
         bb.rejected.connect(self.reject)
         form.addRow(bb)
 
+    def accept(self):
+        for enabled, path in ((self.ui_sound_enabled, self.ui_sound_path),
+                              (self.piece_sound_enabled, self.piece_sound_path)):
+            if enabled.isChecked() and not self._sound_file_ok(path.text().strip()):
+                return
+        super().accept()
+
+    def _sound_controls(self, form, label, value, enabled, default):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        checkbox = QCheckBox(label)
+        checkbox.setChecked(bool(enabled))
+        path = QLineEdit(value)
+        path.setPlaceholderText("WAVファイル")
+        browse = QPushButton("参照…")
+        reset = QPushButton("標準に戻す")
+        preview = QPushButton("試聴")
+        preview.setProperty("uiSoundSkip", True)
+        browse.clicked.connect(lambda: self._pick_sound(path))
+        reset.clicked.connect(lambda: path.setText(default))
+        preview.clicked.connect(lambda: self._preview_sound(path.text().strip()))
+        layout.addWidget(checkbox)
+        layout.addWidget(path, 1)
+        for button in (browse, reset, preview):
+            layout.addWidget(button)
+        for control in (path, browse, reset, preview):
+            control.setEnabled(bool(enabled))
+            checkbox.toggled.connect(control.setEnabled)
+        form.addRow(row)
+        return checkbox, path
+
+    def _sound_file_ok(self, value):
+        import wave
+        path = os.path.join(HERE, value)
+        try:
+            if not value:
+                raise ValueError("WAVファイルを選んでください。")
+            with wave.open(path, "rb") as sound:
+                if sound.getnframes() == 0:
+                    raise ValueError("音声が空です。")
+        except (OSError, EOFError, ValueError, wave.Error) as exc:
+            QMessageBox.warning(self, "音声を確認してください", f"再生用のPCM形式のWAVを選んでください。\n{exc}")
+            return False
+        return True
+
+    def _pick_sound(self, edit):
+        value, _ = QFileDialog.getOpenFileName(self, "音声ファイルを選ぶ", HERE, "WAV音声 (*.wav)")
+        if value and self._sound_file_ok(value):
+            edit.setText(value)
+
+    def _preview_sound(self, value):
+        if self._sound_file_ok(value):
+            play_ui_sound(os.path.join(HERE, value))
+
     @staticmethod
     def _row(edit, btn):
         w = QWidget()
@@ -838,7 +892,10 @@ class SettingsDialog(QDialog):
                 k, v = line.split("=", 1)
                 if k.strip():
                     opts[k.strip()] = v.strip()
-        cfg["ui_sound"] = self.ui_sound.currentData()
+        cfg["ui_sound"] = self.ui_sound_path.text().strip() or "sounds/button.wav"
+        cfg["ui_sound_enabled"] = self.ui_sound_enabled.isChecked()
+        cfg["piece_sound"] = self.piece_sound_path.text().strip() or "sounds/komaoto.wav"
+        cfg["piece_sound_enabled"] = self.piece_sound_enabled.isChecked()
         cfg.update({"engine_path": self.engine.text().strip(), "engine_options": opts,
                     "tsume_engine_path": self.tengine.text().strip(), "tsume_sec": self.tsec.value(),
                     "movetime_sec": self.sec.value(), "mate_sec": self.msec.value(), "low_spec": self.lowspec.isChecked(), "game_sec": self.gsec.value(), "game_workers": self.gwork.value(), "multipv": self.mpv.value(),
@@ -1025,6 +1082,7 @@ class MainWindow(QMainWindow):
         self.resize(1440, 780)
         self.cfg = core.load_config(CONFIG_PATH)
         configure_ui_sound(self.cfg, HERE)
+        configure_piece_sound(self.cfg)
         apply_cache_cap(self.cfg)
         self.engine = None
         self.engine_lock = threading.Lock()
@@ -4448,6 +4506,7 @@ class MainWindow(QMainWindow):
             dlg.apply_to(self.cfg)
             save_config(self.cfg)
             configure_ui_sound(self.cfg, HERE)
+            configure_piece_sound(self.cfg)
             apply_cache_cap(self.cfg)
             self.update_ai_labels()
             self.gen += 1
