@@ -1,56 +1,149 @@
-# 詰将棋 C++ DLL（tsume.dll）
+# 棋慧の詰将棋エンジン（tsume.dll）
 
-棋慧の詰将棋エンジンです。もともとPythonで書いていた `tsume.py`（盤面処理、王手・応手の生成、詰み探索、唯一解・駒余りの検証、逆算生成）を、速くするためにC++17へ移したもので、Windows x64向けの単体DLLになっています。DLLの中でPythonが動くわけではありません。
+棋慧（KIEI）の詰将棋探索・手順検証・逆算生成を行う、C++17製のWindows x64向けDLLです。Pythonからは、リポジトリ直下の `tsume_native.py` を通して呼び出します。探索はC++内で実行し、通常の探索処理がPythonへ戻ることはありません。外部判定を登録するoracle機能は例外です。
 
-棋慧はこのDLLがあれば自動で使い（`tsume_native.py` 経由）、無ければ従来の `tsume.py` に切り替わります。比較用にPython版も残しています。
+2026年11月16日に、KIEIResearchで改良したエンジンを公開用プロジェクトへ移植しました。このREADMEは移植後の構成を説明します。
 
-## このDLLの特徴
+## 何ができるか
 
-一番の売りは、**無駄合を応手に数えない**ことです。柿木の定義に沿って、無駄な合駒は玉方の抵抗として扱いません。KomoringHeightsなどの一般的な詰将棋ソルバーは無駄合を区別しないので、そのせいで見逃される余詰を、このDLLは拾えます。
+- 王手・応手の生成、指定手数以内の詰み探索。
+- 詰み手数、本手順、唯一解・駒余りなどの検証に使う処理。
+- 無駄合を玉方の抵抗から除くための判定、打ち歩詰めの判定。
+- df-pnによる、手数を指定しない簡易な詰み問合せと候補手順の取得。
+- 詰み上がりからの逆算、候補の前進照合、問題生成。
+- 探索の進捗通知、スレッドごとに独立した探索と個別中断。
 
-得意なこと・苦手なことの目安は次のとおりです。
+攻方は先手、玉方は後手です。主な対象は攻方玉なしの短編〜中編の詰将棋で、通常の将棋対局用エンジンではありません。長い作品や重い局面では、時間・メモリの制約に達することがあります。
 
-- **作意の手順がわかっていて、検証したい場合は速い。** 17手の作品でも、十数秒で余詰の有無まで確かめられます。
-- **厳密な手数・余詰の確認とは別に、df-pnによる簡易な詰み問合せを備えます。** df-pnの候補手順は、無駄合を含んだり最短手数より長くなったりするため、厳密な検証結果とは区別してください。
-- **何十手、何百手の長編は対象外。** そういう用途には、脊尾氏のプログラムのような専用ソフトのほうが向いています。
+### 指定手数の検証とdf-pnの違い
 
-あくまで「短編〜中編を、厳しく検査する道具」です。通常の将棋対局用エンジンではありません。
+| 用途 | 使う処理 | 結果の読み方 |
+| --- | --- | --- |
+| 指定した手数で詰むか調べる | `can_mate`、`solve` など | 指定手数内での結果。詰まなくても、さらに長い手数で詰む可能性は残る |
+| 手順や手数を検証する | `verify`、`principal_line` など | エンジンの無駄合・最終手別解などの設定に従う |
+| まず詰み候補を探す | `quick_mate`（df-pn） | 簡易な詰み判定と手順の一例。最短手数・余詰・無駄合の検証完了を意味しない |
 
-## 使われているところ
+ここでいう厳密側の探索も、実装の正しさを全局面で証明したという意味ではありません。既知の比較結果と制限は [VALIDATION.md](VALIDATION.md) に記載しています。
 
-- 棋慧の詰将棋モード（解く、手順検証、余詰・不完全の検査）
-- 「実戦から詰将棋を取り出す」機能
-- 詰将棋ビルダーの判定サーバー（別フォルダの `dll_server.py` が、このDLLを呼びます）
+## Research版から取り込んだ変更
 
-## ビルド
+### 盤面処理と探索の高速化
 
-Visual Studioの「C++によるデスクトップ開発」が必要です。PowerShellで、このリポジトリのルートから次を実行します。
+- ビットボードによる駒・占有升・利きの処理。
+- 飛車・角・香の利きを表引きする仕組み（slider magic）。
+- 升の間の集合や近接駒の利きの事前計算。
+- 玉位置・歩の筋情報・局面ハッシュなどの管理の改善。
+- 王手、応手、無駄合判定で不要な走査や盤面コピーを減らす処理。
+
+Research側の保存記録では、固定した27問の通常探索で合計時間が約12〜13％短縮されています。比較条件と問題群に限った測定であり、公開版からの一律の高速化率や、すべての問題での改善を示すものではありません。
+
+### 不具合修正
+
+- 玉方の支え駒の利きを、正しい駒種と玉方の向きで判定するよう修正。
+- 駒打ちで相手駒のある升へ置けてしまう条件を修正。盤上の駒による通常の駒取りは維持。
+
+このため、不具合に関係する局面では旧版と判定が変わる場合があります。
+
+### 探索制御・診断機能
+
+- context単位の停止・再開準備。
+- df-pn単独、および複数の探索呼び出しを通した訪問数の通知。
+- df-pnの証明記録、探索表から独立した記録の点検。
+- 省略した合駒を戻した再探索と、その記録の取り出し。
+- 指定した初手を除外するdf-pn探索。
+- 不詰候補について、玉方の逃れを後から点検するための記録。
+
+**今回移植したのはエンジンとPython窓口です。** Research側の並行探索を制御するアプリ処理や、不詰記録を独立に点検して画面へ反映する処理は含みません。DLLを更新するだけで、それらの画面機能が追加されるわけではありません。
+
+## ファイル構成
+
+| ファイル | 役割 |
+| --- | --- |
+| `tsume.cpp` | 盤面、手生成、探索、検証、逆算生成、C API本体 |
+| `tsume.h` | 公開するC APIの宣言 |
+| `slider_magic.h` | 飛び駒の利きの表引き |
+| `slider_magic_constants.h` | 表引きに必要な定数 |
+| `dfpn_proof.h` | df-pnの証明記録・点検 |
+| `dfpn_feedback.h` | 合駒を戻す再探索と記録の連携 |
+| `build.bat`、`CMakeLists.txt` | ビルド設定 |
+| `check_native.py`、`check_edges.py`、`check_upgrade.py` | 比較・回帰確認 |
+| `../tsume_native.py` | Pythonから呼び出す窓口 |
+| `VALIDATION.md` | 実施した確認と既知の不一致 |
+
+`tsume.cpp` だけをコピーしてもビルドできません。上記のヘッダー5個も同じフォルダに置いてください。`native_tsume` 内に古いPythonファイルなどが手元に残っている場合も、利用する窓口はリポジトリ直下の `tsume_native.py` です。
+
+## ビルドと更新
+
+Windows x64、64bit版Python、Visual Studioの「C++によるデスクトップ開発」が必要です。リポジトリのルートで実行します。
 
 ```powershell
 cmd /c native_tsume\build.bat
 ```
 
-通常はインストール済みのVisual Studioを自動検出します。検出できない場合は「x64 Native Tools Command Prompt」で `native_tsume\build.bat` を実行してください。
+Visual Studioを自動検出し、C++17・`/O2`・`/MT`・x64でビルドします。検出できない場合は「x64 Native Tools Command Prompt」から実行してください。
 
-完成品は **`native_tsume\tsume.dll`** です（`.gitignore` で除外しているので、リポジトリには入っていません。使う人が自分でビルドしてください）。Release相当の最適化 `/O2` と、静的C++ランタイム `/MT` を指定しています。64bit版Pythonを使ってください。
+完成品は `native_tsume\tsume.dll` です。DLL、オブジェクト、ライブラリなどの生成物はGit対象外のため、ソースを取得した利用者側でビルドします。更新時は棋慧を終了し、再ビルドしてから起動し直してください。実行中のアプリには、更新前のDLLが読み込まれたままになる場合があります。
 
-Visual Studioの通常のDLLプロジェクトでビルドする場合は、`tsume.cpp` と `tsume.h` を追加し、C++17・x64・プリコンパイル済みヘッダー「使用しない」を設定します。付属のCMake設定も利用できます。
+CMakeでビルドする場合は、完成した `tsume.dll` を `native_tsume` 直下に配置してください。Python窓口はその場所から読み込みます。
 
-## Pythonから試す
+## Pythonから使う
 
-リポジトリのルートで実行します。
+以下の例はすべて、リポジトリのルートで実行します。`python-shogi` など、プロジェクトの依存ライブラリを先に導入してください。
+
+### 指定手数の探索
 
 ```python
 import shogi
 import tsume_native as solver
 
-# 頭金の1手詰。
-board = shogi.Board("4k4/9/4G4/9/9/9/9/9/9 b G 1")
+sfen = "4k4/9/4G4/9/9/9/9/9/9 b G 1"
+board = shogi.Board(sfen)
 print(solver.can_mate(board, 1))
 print([move.usi() for move in solver.solve(board, 1)])
 ```
 
-生成も探索全体をDLL内で行います。
+### df-pnによる詰み問合せ
+
+```python
+import tsume_native as solver
+
+sfen = "4k4/9/4G4/9/9/9/9/9/9 b G 1"
+try:
+    state, moves = solver.quick_mate(sfen, seconds=10)
+    print(state, moves)
+except ValueError as exc:
+    if "timeout" in str(exc):
+        print("時間切れ：結論未確定")
+    else:
+        raise
+```
+
+戻り値の状態は `mate`、`nomate`、`unknown` です。時間切れは状態文字列ではなく `ValueError("timeout")` になります。`nomate` は簡易判定として扱い、厳密な不詰証明としてそのまま採用しないでください。
+
+`quick_mate` には次の任意引数があります。
+
+| 引数 | 用途 |
+| --- | --- |
+| `progress=callback` | `nodes`、`search_seconds`、`phase` を含む辞書を受け取る |
+| `excluded_firsts=["USI", ...]` | 指定した初手を根だけで除外する。除外後の不詰は局面全体の不詰ではない |
+| `nonmate_trace=True` | 後から逃れを点検するための記録を残す。初手除外を指定した場合は初手除外の操作が優先される |
+
+### 複数呼び出しの探索数を合算する
+
+```python
+import shogi
+import tsume_native as solver
+
+board = shogi.Board("4k4/9/4G4/9/9/9/9/9/9 b G 1")
+with solver.SearchProgress() as meter:
+    solver.can_mate(board, 1)
+    solver.solve(board, 1)
+    print(meter.snapshot())
+```
+
+訪問数は、同じ局面への再訪やキャッシュ参照を含む探索関数の呼び出し数です。異なる局面の個数ではありません。`SearchProgress` の経過時間には、呼び出しの間のPython側の処理時間も含まれます。一方、`quick_mate` の進捗の `search_seconds` はdf-pn探索時間で、手順構築時間を含みません。
+
+### 逆算生成
 
 ```python
 import random
@@ -59,94 +152,77 @@ import tsume_native as solver
 result = solver.generate(3, random.Random(42), budget=600, time_limit=10)
 if result is not None:
     sfen, moves = result
-    print(solver.show(sfen))
     print(sfen, moves)
 ```
 
-既存の利用側を切り替える場合は `import tsume as solver` を `import tsume_native as solver` に変更します。`tsume_jissen.py` 内の `import tsume as _t` も別の呼び出し先なので、アプリ全体を切り替える際はそちらも確認してください。
+C++側は `mt19937_64` を使います。同じPythonのseedから、Python版と同じ作品が生成されることは保証しません。
 
-## 移植範囲と互換性
+## 互換性・スレッド・中断
 
-- `can_mate`、`solve`、`defenders_all_lose`、`mate_length_exact`、`principal_line`、`verify`、`gen_checks`、`gen_evasions`、`clear_cache` はPython版と同じ引数・戻り値の形式です。
-- 逆算候補生成、前進照合、生成途中の健全性判定、乱数による詰み上がり生成、逆算探索もC++にあります。Pythonの `_try_unmove`、`_forward_matches`、`_node_ok`、`random_mate_position`、`_search` にも窓口を用意しています。
-- `Pos`、`pos_from_board`、`show`、定数はPython版を再利用します。Python側の盤面表示とデータ変換のためのもので、DLL内部の探索からPythonへ戻ることはありません。
-- 攻方は先手、玉方は後手。主な対象は元のコード同様、攻方玉なしの詰将棋です。通常の将棋対局用エンジンではありません。
-- 無駄合は、玉方の応手に数えません（柿木の定義）。打ち歩詰めも判定します。ただし、将棋のルールに対して「完全に正しい」と証明されたものではなく、実戦で確かめながら直している段階です。
-- 乱数生成器はC++標準の `mt19937_64` を使用します。同じPythonのseedから、Python版と同じ作品が出ることは保証しません。
-- 手の集合が同じでも、SFENからの復元や逆算時の列挙順の違いにより、同長の抵抗手の選択や生成結果は変わる場合があります。
-- Python版 `principal_line` が不成功時に入力盤面を変更する場合がありますが、DLL版は成功・失敗とも呼び出し元の盤面を変更しません。
-- キャッシュはスレッドごとです。`clear_cache()` は呼び出したスレッドのキャッシュを消します。DLL呼び出し中はctypesがGILを解放します。
-- 生成の時間制限は探索内部でも確認します。従来版の「外側のループだけで確認する」動作とは異なり、途中の探索も打ち切ります。
-- `_CACHE_A` など内部のPython辞書を外から直接操作するAPIは提供しません。
+従来のC公開関数の引数と既存の操作名は維持しています。`can_mate`、`solve`、`defenders_all_lose`、`mate_length_exact`、`principal_line`、`verify`、`gen_checks`、`gen_evasions` などのPython側の呼び出し形式も維持しています。ただし、不具合修正や手の列挙順の違いにより、結果の手順が旧版と変わる場合があります。
 
-## 比較検証
+`Pos`、`pos_from_board`、`show`、定数などはPython版 `tsume.py` を再利用するため、DLLと窓口だけを単独で配置する構成ではありません。直接 `tsume_native` を呼んだ場合、DLLがなければエラーになります。Python版への切替は利用側の処理です。
 
-実施済みの結果は [VALIDATION.md](VALIDATION.md) にまとめています。
+各スレッドのcontextは探索表・キャッシュを独立して持ちます。`clear_cache()` は呼び出したスレッドのcontextを消去します。一つのcontextを複数スレッドから同時に探索へ使わないでください。
 
-```powershell
-python native_tsume\check_native.py
-python native_tsume\check_edges.py
-```
+- `cancel(True)` は全体の停止要求、`cancel(False)` はその解除です。
+- `ContextStop.bind()` は探索するworkerスレッドで呼びます。別スレッドから `stop()` を呼ぶと、そのcontextだけに停止を要求できます。
+- 停止した探索が終了してから `rearm()` で停止要求を解除して再利用し、使い終わったハンドルは `close()` します。
+- 進捗コールバックの登録・解除は、contextが探索していないときに行います。コールバックは探索スレッド上で実行され、同じcontextへの再入は禁止です。
+- 旧DLLでは任意の進捗通知を省略する場合がありますが、個別停止や追加操作には新DLLが必要です。ソースとPython窓口を更新したらDLLも再ビルドしてください。
 
-`check_native.py` は付属問題集の初形・途中・終盤の王手／応手をPython版と比較し、浅い探索、逆算候補、生成問題、並行呼び出しを検証します。最後に両実装の小規模な速度比較を表示します。`check_edges.py` は成り・二歩・打ち歩詰め・合駒・入力エラー・出力バッファを確認します。
+## 証明記録・合駒補修の診断API
+
+| Python API | 用途 |
+| --- | --- |
+| `proof_report(sfen, ...)` | df-pnを実行し、上限付きで証明根拠を記録・点検する |
+| `last_proof_report()` | 同じcontextに残る最後の診断記録を再点検する |
+| `export_proof()` | 元の記録と、持駒違いに適用できた対象局面の記録を取り出す |
+| `repair_defense(sfen, move, ...)` | 玉方局面で指定した合駒を省かず再探索する |
+| `repair_pending(sfen, ...)` | 未確認の合駒を上限付きで問い合わせ、記録を再点検する |
+| `export_feedback()` | 分離した再探索で得た記録を取り出す |
+
+これらは診断用です。`certificate_complete` は記録の分岐を復元できたという意味で、最短手数・余詰・全無駄合規則の検証完了を意味しません。時間や記録容量が不足した場合は未確認のまま扱います。診断の結果を厳密側の確定キャッシュへ自動的に流用するものではなく、`repair_pending` の `strict_result_reused` は常に `False` です。
+
+不詰の逃れ記録も、それだけで独立した不詰証明にはなりません。記録を取得した後の独立点検は、このDLLとは別の利用側の処理です。
 
 ## C API
 
-`tsume.h` の `tsume_create` でコンテキストを作り、`tsume_run` を呼び、最後に `tsume_destroy` で解放します。一つのコンテキストを複数スレッドで同時に使わないでください。
+宣言は `tsume.h` にあります。`tsume_create` → `tsume_run` → `tsume_destroy` の順で利用します。
 
-`tsume_run` は結果文字列に必要なバイト数（終端NULを含む）を返します。エラーは `-1` で、詳細は `tsume_error` から取得します。バッファが不足した場合は書き込まず、直前の結果をコンテキスト内に保持します。`tsume_copy_result` で大きなバッファにコピーできます。生成を再実行する必要はありません。
+`tsume_run` は結果文字列に必要なバイト数（終端NULを含む）を返します。エラー時は `-1` で、詳細は `tsume_error` から取得できます。出力バッファが不足した場合は書き込まず、結果をcontext内に保持します。`tsume_copy_result` で大きなバッファへコピーでき、探索や生成を再実行する必要はありません。
 
-主なoperation:
+| 操作 | 主な結果 |
+| --- | --- |
+| `checks`、`evasions`、`solve`、`moves` | 空白区切りUSI |
+| `can_mate`、`defenders`、`exact` | `1` / `0` |
+| `line`、`verify` | 空白区切りUSI、不成立は `-` |
+| `random`、`unmove`、`generate`、`search` | SFENや手順など。形式はPython窓口を参照 |
+| `dfpn`、`dfpn_trace`、`dfpn_excluding` | `M`（詰み候補と手順）、`N`（不詰候補）、その他未確定 |
+| `dfpn_proof`、`proof_report`、`proof_export` | 証明記録や点検結果のJSON |
+| `repair_defense`、`feedback_export` | 合駒補修の結果・記録のJSON |
+| `nonmate_trace` | 不詰候補の逃れ記録のJSON |
+| `final_alt` | 最終手の別解を許すか設定 |
+| `clear` | キャッシュ・診断記録などを消去 |
 
-| operation | 主な入力 | 文字列の結果 |
-|---|---|---|
-| `checks`, `evasions`, `solve`, `moves` | SFEN、必要に応じてn/color | 空白区切りUSI |
-| `can_mate`, `defenders`, `exact` | SFEN、n | `1` / `0` |
-| `line`, `verify` | SFEN、n | 空白区切りUSI、不成立は `-` |
-| `unmove` | SFEN、color | `SFEN<TAB>USI` の行一覧 |
-| `dead`, `node` | SFEN、必要に応じてn/color | `1` / `0` |
-| `random` | seed | SFEN、不成立は空文字 |
-| `generate` | n、seed、budget、seconds | `SFEN`＋改行＋USI列、時間切れは空文字 |
-| `search` | SFEN、残り逆算数n、color、seed、budget | SFEN（不成立は `-`）＋改行＋残予算 |
-| `forward` | `QのSFEN`＋改行＋`PのSFEN`＋改行＋USI、color | `1` / `0` |
-| `futile` | SFEN＋改行＋合駒USI、n=王手駒のマス番号 | `1` / `0` |
-| `final_alt` | n（0=最終手の別解を許さない、0以外=許す） | 空文字。以後の判定で、最後の1手だけは複数の詰み手を許す |
-| `clear` | なし | 空文字 |
+`tsume_cancel_context`、`tsume_set_progress`、`tsume_set_search_progress` が個別停止・進捗通知の追加C APIです。詳細な引数・コールバックの条件は `tsume.h` を参照してください。
 
-SFENとUSIはASCII。colorは先手=0・後手=1、マス番号はSFENの左上=0から行優先で80までです。通常はPythonの窓口経由で利用してください。
+SFENとUSIはASCII、colorは先手=0・後手=1、升番号はSFENの左上=0から行優先で80までです。複合入力や設定操作の形式は `tsume.cpp` の `run_inner` と `tsume_native.py` に定義されています。通常はPython窓口を使ってください。
 
-ここに載せていない操作（`legal`、`pseudo`、`oracle_min`、`oracle_stats` など）は、`tsume.cpp` の `run_inner` 付近を見てください。
+## 検証方法と既知の制限
 
+リポジトリのルートで実行します。
 
-## エンジンの更新（2026-11-16）
+```powershell
+python native_tsume\check_edges.py
+python native_tsume\check_upgrade.py
+python native_tsume\check_native.py --skip-corpus
+```
 
-Research版のC++エンジンとルートの `tsume_native.py` を移植しました。画面、詰将棋DB、`tsume_verify.py` は今回変更していません。Research側の並行探索・不詰証明の画面連携は含みません。
+- `check_edges.py`：107個の個別・ランダム盤面、合法性、逆算補助、入力・出力バッファなどのC APIを確認。
+- `check_upgrade.py`：進捗の累積、df-pn手順の合法性と終端詰み、初手除外API、個別中断とcontext再利用を確認。
+- `check_native.py --skip-corpus`：問題集全体の手生成比較を省き、終盤探索・逆算候補・生成などをPython版と比較。
 
-### ビルドに必要なソース
+全問題集の比較は `python native_tsume\check_native.py` です。ただし、現時点ではPython版とC++版の応手集合に既知の不一致が1件あり、その局面で停止します。旧DLLでも同じ不一致があり、今回の移植で導入された差ではありません。無駄合による除外の適否は未確定です。
 
-`tsume.cpp`、`tsume.h` に加え、同じフォルダの次の4ファイルが必要です。
-
-- `slider_magic.h`
-- `slider_magic_constants.h`
-- `dfpn_proof.h`
-- `dfpn_feedback.h`
-
-既存の `build.bat` とCMake設定でビルドできます。配布元から更新した場合はDLLを再ビルドし、棋慧を再起動してください。DLL・中間生成物はGitの対象外です。
-
-### 主な変更
-
-- ビットボードと飛び駒の利きの表引き、盤面・利きのキャッシュを導入。
-- 玉方の支え駒の向きの判定を修正。相手駒がある升への駒打ちを拒否。
-- 既存のC APIの引数と操作名を維持。
-- context単位の停止、df-pnと厳密探索の進捗通知を追加。
-- df-pnの証明記録・点検、省略した合駒の再探索、初手除外、不詰の逃れ記録を追加。
-
-### 追加APIと判定の限界
-
-`tsume_native.py` の `ContextStop` は独立したcontextの探索を停止します。`SearchProgress` は同じスレッドで行った探索の訪問数を合算します。`quick_mate` は任意の `progress`、`excluded_firsts`、`nonmate_trace` 引数を受け取ります。従来の引数による呼び出しも維持しています。
-
-C APIの `tsume_cancel_context` は対象contextだけを停止します。`tsume_set_progress` と `tsume_set_search_progress` は探索スレッドから通知します。コールバックの登録・解除はcontextが停止中に行い、コールバック内から同じcontextを再び呼ばないでください。
-
-診断の `certificate_complete` は、記録した分岐の証明を復元できたという意味です。最短手数・余詰・全無駄合規則の検証完了を意味しません。初手を除外した探索の不詰は、局面全体の不詰を意味しません。不詰トレースも独立に点検するための資料で、取得だけでは不詰証明になりません。
-
-すべての問題での高速化や判定の完全性を保証するものではありません。今回の確認内容は [VALIDATION.md](VALIDATION.md) を参照してください。
+移植時には、旧・新DLLの王手／応手が200問・1,507局面で一致し、別の既存抽出21問でも指定手数での詰み判定が一致しました。これは有限の回帰確認であり、全局面での正しさや高速化の保証ではありません。条件・実測結果・不一致の再現局面は [VALIDATION.md](VALIDATION.md) を参照してください。
