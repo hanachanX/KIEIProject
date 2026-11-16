@@ -712,7 +712,7 @@ class SettingsDialog(QDialog):
         self.piece_sound_enabled, self.piece_sound_path = self._sound_controls(
             form, "駒音を鳴らす", selected or "sounds/komaoto01.wav",
             cfg.get("piece_sound_enabled", bool(selected)), "sounds/komaoto01.wav",
-            [("音1（現在の駒音）", "sounds/komaoto01.wav"), ("音2（ぽす）", "sounds/komaoto02.wav")])
+            [("音1", "sounds/komaoto01.wav"), ("音2", "sounds/komaoto02.wav")])
 
         self.engine = QLineEdit(cfg.get("engine_path", ""))
         b1 = QPushButton("参照…")
