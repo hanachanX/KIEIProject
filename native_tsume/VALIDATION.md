@@ -31,3 +31,27 @@ Windows x64、Python 3.14、Visual StudioのMSVCで確認しました。
 ## 追記（2026-11-02）
 
 上の検証のあとに、`final_alt`（最終手の別解を許す設定）を追加し、tsume.dll を作り直しました。この追加分については、Python版との網羅的な再比較はしていません。代わりに、詰将棋ビルダーの候補（約45問）で判定の食い違いを調べたり、棋慧のモードで実際に動かしたりして確かめています。
+
+## Researchエンジン移植時の確認（2026-11-16）
+
+対象はC++エンジン、必要な4ヘッダー、ルートの `tsume_native.py` のみです。`app.py`、`tsume_verify.py` はバックアップとバイト単位で同一、`tsume_mode.py`・DB・駒音も変更していません。Researchの画面連携・並行探索モジュールは移植していません。
+
+Windows x64 / Python 3.14 / Visual Studio 2026で、コピーしたソースからDLLを再ビルドしました。今回の確認は次のとおりです。
+
+- `cmd /c native_tsume\build.bat`：成功、警告なし。
+- `python native_tsume\check_edges.py`：成功。107個の個別・ランダム盤面、合法性、逆算補助、詰上がり生成、C APIを確認。
+- `python native_tsume\check_upgrade.py`：成功。探索数の累積、df-pn手順の合法性と終端詰み、初手除外API、context単位の中断、他contextの継続、停止後の再利用を確認。
+- `python native_tsume\check_native.py --skip-corpus`：成功。終盤12探索、逆算10組、1手詰・3手詰の生成とPython版での検証を確認。
+- 移植前後のDLLを直接比較：既存DB200問からの1,507局面で王手／応手の集合が一致。Researchの既存抽出21問について、指定手数での詰み判定がすべて一致。
+- 既存の詰将棋DB画面テスト5件：成功。今回エンジン外の画面処理は変更していません。
+- Python構文確認と `git diff --check`：成功。
+
+### 既存のPython版との不一致
+
+`python native_tsume\check_native.py` の全問題比較は、次の局面でPython版とC++版の応手集合が違うため停止しました。移植前の旧DLLも新DLLと同じ集合を返すことを確認しており、今回導入した差ではありません。
+
+SFEN: `9/9/2l1Sn3/2+b1l4/2R1k1l2/3P1p3/1s1GP4/5+p3/3+p5 w rb3g2s3nl13p 20`
+
+Python版は `7d6e` を含みますが、旧・新DLLとも含みません。python-shogi上ではこの手は合法です。C++版の無駄合による除外が適切かは今回確定していません。したがって、全問題でPython版と一致したとはしていません。
+
+ここに示す有限の検証は、全局面の正しさや全問題での高速化を保証するものではありません。

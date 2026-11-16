@@ -124,6 +124,105 @@ def _run(op, board=None, n=0, color=0, seed=0, budget=600, seconds=None, text=No
     return buf.value.decode("ascii")
 
 
+class ContextStop:
+    """Thread-safe stop handle; bind on the worker, close only after it is idle."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._requested = False
+        self._ctx = None
+        self._fn = None
+
+    def bind(self):
+        if not hasattr(_local, "context"):
+            _local.context = _Context()
+        ctx = _local.context
+        try:
+            fn = ctx.lib.tsume_cancel_context
+        except AttributeError as exc:
+            raise RuntimeError("並行探索に対応したDLLへの更新と、アプリの再起動が必要です。") from exc
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        fn.restype = None
+        with self._lock:
+            self._ctx, self._fn = ctx, fn
+            fn(ctx.ptr, int(self._requested))
+        return self
+
+    def stop(self):
+        with self._lock:
+            self._requested = True
+            if self._fn is not None:
+                self._fn(self._ctx.ptr, 1)
+
+    def is_stopped(self):
+        with self._lock:
+            return self._requested
+
+    def rearm(self):
+        with self._lock:
+            self._requested = False
+            if self._fn is not None:
+                self._fn(self._ctx.ptr, 0)
+
+    def close(self):
+        with self._lock:
+            if self._fn is not None:
+                self._fn(self._ctx.ptr, 0)
+            self._ctx, self._fn = None, None
+
+
+class SearchProgress:
+    """Aggregate native visits for a whole job on the calling worker thread.
+
+    snapshot() is safe for a display thread: each update replaces the dictionary.
+    NPS uses total wall time, including time between native operations.
+    """
+    def __init__(self):
+        self.stats = None
+        self._total = 0
+        self._setter = None
+        self._callback = None
+
+    def __enter__(self):
+        import time
+        self._started = time.monotonic()
+        if not hasattr(_local, "context"):
+            _local.context = _Context()
+        self._ctx = _local.context
+        try:
+            setter = self._ctx.lib.tsume_set_search_progress
+        except AttributeError:
+            return self  # Older DLL: do not invent a zero count.
+        setter.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        setter.restype = None
+        def report(nodes, seconds, phase):
+            if phase == 0:
+                self._total += int(nodes)
+                count = self._total
+            else:
+                count = self._total + int(nodes)
+            self.stats = {"nodes": count}
+        self._callback = ctypes.CFUNCTYPE(None, ctypes.c_ulonglong, ctypes.c_double, ctypes.c_int)(report)
+        setter(self._ctx.ptr, ctypes.cast(self._callback, ctypes.c_void_p))
+        self._setter = setter
+        self.stats = {"nodes": 0}
+        return self
+
+    def snapshot(self):
+        import time
+        if self.stats is None:
+            return None
+        return {**self.stats, "search_seconds": max(0.0, time.monotonic() - self._started)}
+
+    def close(self):
+        if self._setter is not None:
+            self._setter(self._ctx.ptr, None)
+            self._setter = None
+            self._callback = None
+
+    def __exit__(self, *args):
+        self.close()
+
+
 def _moves(text):
     return [shogi.Move.from_usi(m) for m in text.split()]
 
@@ -284,14 +383,48 @@ def oracle_stats():
         return 0, 0
 
 
-def quick_mate(sfen, seconds=60.0):
+def quick_mate(sfen, seconds=60.0, progress=None, excluded_firsts=None, nonmate_trace=False):
     """df-pn による詰み問合せ。詰みの有無と、手順の一例を返す（最短・正確な手数は保証しない）。
     戻り値: ("mate", [USI...]) / ("nomate", []) / ("unknown", [])。時間切れは ValueError('timeout')。
+    excluded_firstsにUSIの初手リストを指定すると、その初手だけを根で除外する。
+    除外時のnomateは残り候補の簡易判定であり、厳密な余詰なしの証明には使わない。
     古いDLLには無い機能なので、その場合は ValueError('Unknown operation') になる。"""
-    r = _run("dfpn", text=sfen, seconds=seconds)
+    setter = None
+    ctx = None
+    callback = None
+    if progress is not None:
+        if not hasattr(_local, "context"):
+            _local.context = _Context()
+        ctx = _local.context
+        try:
+            setter = ctx.lib.tsume_set_progress
+        except AttributeError:
+            pass  # Older DLL: the UI can still show elapsed wall time.
+        if setter is not None:
+            setter.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            setter.restype = None
+            def report(nodes, elapsed, phase):
+                try:
+                    progress({"nodes": int(nodes), "search_seconds": float(elapsed), "phase": int(phase)})
+                except Exception:
+                    pass  # Display failures must not interrupt the native search.
+            callback = ctypes.CFUNCTYPE(None, ctypes.c_ulonglong, ctypes.c_double, ctypes.c_int)(report)
+            setter(ctx.ptr, ctypes.cast(callback, ctypes.c_void_p))
+    try:
+        excluded = None if excluded_firsts is None else tuple(excluded_firsts)
+        operation = ("dfpn_trace" if nonmate_trace else "dfpn") if excluded is None else "dfpn_excluding"
+        text = sfen if excluded is None else sfen + "\n" + " ".join(excluded)
+        r = _run(operation, text=text, seconds=seconds)
+    finally:
+        if setter is not None:
+            setter(ctx.ptr, None)
+
     if r.startswith("M"):
         parts = r.split()
-        return "mate", parts[2:]
+        pv = parts[2:]
+        if excluded is not None and pv and pv[0] in excluded:
+            raise ValueError("Excluded first move returned by native solver")
+        return "mate", pv
     return ("nomate" if r.startswith("N") else "unknown"), []
 
 
@@ -312,3 +445,82 @@ def hint_line(sfen, moves):
         return int(_run("hintline", text=sfen + "\n" + " ".join(moves)))
     except ValueError:
         return 0
+
+
+def proof_report(sfen, seconds=60.0, max_nodes=50000):
+    """診断用：df-pnの証明根拠を上限付きで記録し、探索表なしで構造を点検する。
+
+    structurally_complete は省略条件付きの場合もある。最短手数・無駄合の
+    厳密検証には使わない。通常のquick_mate/prime_hintsでは記録しない。
+    """
+    import json
+    return json.loads(_run("dfpn_proof", text=sfen, n=max(1, min(int(max_nodes), 100000)), seconds=seconds))
+
+
+def last_proof_report(seconds=30.0):
+    """最後の診断記録を再点検する。探索表は使わない。"""
+    import json
+    return json.loads(_run("proof_report", text="", seconds=seconds))
+
+
+def export_proof(seconds=30.0):
+    """元の診断記録と、持駒違いへ適用できた対象局面の記録を返す。"""
+    import json
+    return json.loads(_run("proof_export", text="", seconds=seconds))
+
+
+def repair_defense(sfen, move, seconds=10.0, strict_budget=0, max_nodes=50000):
+    """診断用：指定予算で無駄合と判定されなかった合駒を、省かず再探索。
+
+    元の数値表は再利用しない。返った証明も最短性・余詰を保証せず、
+    厳密側の確定キャッシュには入れない。records_merged後も再点検が必要。
+    """
+    import json
+    return json.loads(_run("repair_defense", text=sfen + "\n" + str(move), n=int(strict_budget),
+                           budget=max(1, min(int(max_nodes), 100000)), seconds=seconds))
+
+
+def export_feedback(seconds=30.0):
+    """最後の分離した再探索で得た証明記録を返す。"""
+    import json
+    return json.loads(_run("feedback_export", text="", seconds=seconds))
+
+
+def repair_pending(sfen, seconds=10.0, strict_budget=0, max_requests=4, max_nodes=50000):
+    """診断用：証明点検→厳密な合駒判定→df-pn補修→再点検の小さな往復。
+
+    complete は最短手数や余詰の確認完了ではない。通常の詳細検討からは未使用。
+    """
+    import time
+    end = time.monotonic() + max(0.001, float(seconds))
+    requests = []
+    def remaining():
+        left = end - time.monotonic()
+        if left <= 0:
+            raise ValueError("timeout (feedback deadline)")
+        return left
+    try:
+        report = proof_report(sfen, seconds=remaining(), max_nodes=max_nodes)
+        seen = set()
+        for _ in range(max(0, min(int(max_requests), 16))):
+            if report.get("complete_without_omissions"):
+                break
+            pending = next((p for p in report.get("pending_defenses", [])
+                            if (p["sfen"], p["move"]) not in seen), None)
+            if pending is None:
+                break
+            seen.add((pending["sfen"], pending["move"]))
+            result = repair_defense(pending["sfen"], pending["move"], seconds=remaining(),
+                                    strict_budget=strict_budget, max_nodes=max_nodes)
+            requests.append({"sfen": pending["sfen"], "move": pending["move"], "response": result})
+            report = last_proof_report(seconds=remaining())
+            if result["status"] in ("unknown", "incomplete_proof", "nomate_candidate"):
+                break
+        status = ("certificate_complete" if report.get("complete_without_omissions") else
+                  "conditional" if report.get("structurally_complete") else "incomplete")
+        return {"status": status, "proof": report, "requests": requests, "strict_result_reused": False}
+    except ValueError as exc:
+        if "timeout" not in str(exc):
+            raise
+        return {"status": "unknown", "proof": None, "requests": requests,
+                "error": str(exc), "strict_result_reused": False}
