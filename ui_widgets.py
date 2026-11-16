@@ -1,7 +1,7 @@
 """棋慧の共通ボタン。"""
 from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPalette, QPen
-from PyQt6.QtWidgets import QPushButton as NativePushButton, QStyleOptionButton, QStylePainter, QStyle
+from PyQt6.QtWidgets import QPushButton as NativePushButton, QStyleOptionButton, QStylePainter, QStyle, QMessageBox
 
 class QPushButton(NativePushButton):
     """棋慧専用の切り角ボタン。クリック・メニュー・キー操作はQtに任せる。"""
@@ -86,3 +86,23 @@ class QPushButton(NativePushButton):
         # Qt draws text, mnemonics, icons and menu arrows, including the disabled state.
         painter.drawControl(QStyle.ControlElement.CE_PushButtonLabel, option)
 
+
+
+class StyledMessageBox(QMessageBox):
+    """Qt message box whose text/role buttons use the shared KIEI appearance.
+
+    Use addButton(text, role), then clickedButton() for custom choices.
+    Qt's button-object and standard-button overloads retain their normal behavior.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        if hasattr(QMessageBox, "Option"):
+            self.setOption(QMessageBox.Option.DontUseNativeDialog, True)
+
+    def addButton(self, *args):
+        if len(args) == 2 and isinstance(args[0], str):
+            button = QPushButton(args[0], self)
+            super().addButton(button, args[1])
+            return button
+        return super().addButton(*args)

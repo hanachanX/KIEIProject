@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QTableWidget, QTableWidgetItem, QAbstractItemView, QVBoxLayout,
                              QHeaderView, QStyledItemDelegate, QSpinBox, QMessageBox)
-from ui_widgets import QPushButton
+from ui_widgets import QPushButton, StyledMessageBox
 
 try:                        # C++版（native_tsume/tsume.dll）があれば高速版、無ければ従来のPython版を使う
     import tsume_native as solver
@@ -935,15 +935,22 @@ class TsumeDialog(QDialog):
         try:
             w = self.win
             if getattr(w, "tsume", None) and getattr(w, "moves", None) and not getattr(w, "_closing_all", False):
-                from PyQt6.QtWidgets import QMessageBox
-                B = QMessageBox.StandardButton
-                r = QMessageBox.question(self, "詰将棋", "解いている途中です。詰将棋モードも終えますか？\n\n"
-                                         "はい：モードを終えて閉じる／いいえ：一覧だけ閉じて続ける",
-                                         B.Yes | B.No | B.Cancel, B.No)
-                if r == B.Cancel:
+                box = StyledMessageBox(self)
+                box.setWindowTitle("詰将棋")
+                box.setIcon(QMessageBox.Icon.Question)
+                box.setText("解いている途中です。詰将棋モードも終えますか？\n\n"
+                            "はい：モードを終えて閉じる／いいえ：一覧だけ閉じて続ける")
+                yes = box.addButton("はい", QMessageBox.ButtonRole.YesRole)
+                no = box.addButton("いいえ", QMessageBox.ButtonRole.NoRole)
+                cancel = box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+                box.setDefaultButton(no)
+                box.setEscapeButton(cancel)
+                box.exec()
+                selected = box.clickedButton()
+                if selected is cancel or selected is None:
                     e.ignore()
                     return
-                if r == B.Yes:
+                if selected is yes:
                     w.tsume_exit()
         except Exception:
             pass
@@ -1158,6 +1165,17 @@ class TsumeDialog(QDialog):
             QMessageBox.warning(self, "保存できません", str(exc))
             self.apply_filter()
             return False
+        active = getattr(self.win, "tsume", None)
+        shown = getattr(self.win, "tsume_shown", None)
+        displayed = [active.get("prob") if active else None, shown[0] if shown else None]
+        refreshed = False
+        for problem in displayed:
+            if problem is not None and p.get("id") is not None and problem.get("id") == p["id"]:
+                problem.update(p)
+                refreshed = True
+        update_banner = getattr(self.win, "update_tsume_banner", None)
+        if refreshed and callable(update_banner):
+            update_banner()
         self.apply_filter()
         self.win.status.setText(f"「{p['title']}」の情報を更新しました")
         return True

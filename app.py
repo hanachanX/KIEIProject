@@ -76,7 +76,7 @@ def kiei_fonts():
 FONT_FAMILIES = ["Yu Gothic UI", "Meiryo UI", "Meiryo", "MS Gothic", "Noto Sans CJK JP"]
 
 
-from ui_widgets import QPushButton
+from ui_widgets import QPushButton, StyledMessageBox
 
 
 def save_config(cfg):
@@ -658,10 +658,12 @@ class BoardWidget(QWidget):
         self.positionEdited.emit(core.model_to_sfen(cells, hands, turn))
 
     def _ask_promote(self):
-        box = QMessageBox(self)
+        box = StyledMessageBox(self)
         box.setWindowTitle("成りますか？")
         yes = box.addButton("成る", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("成らない", QMessageBox.ButtonRole.RejectRole)
+        no = box.addButton("成らない", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(yes)
+        box.setEscapeButton(no)
         box.exec()
         return box.clickedButton() is yes
 
@@ -1087,7 +1089,7 @@ class MainWindow(QMainWindow):
         self.tsume_exit_btn.hide()
         bn_row.addWidget(self.tsume_exit_btn)
         lv.addLayout(bn_row)
-        self.tsume_memo = QTextBrowser()               # 問題のメモ（棋譜コメントとは別の枠）
+        self.tsume_memo = QTextBrowser()               # 作品の作者・出典・メモ（棋譜コメントとは別枠）
         self.tsume_memo.setMaximumHeight(110)
         self.tsume_memo.setStyleSheet("background:#e8f1fb; color:#1c3553; border:1px solid #9bb9d8; border-radius:4px;")
         self.tsume_memo.hide()
@@ -1427,6 +1429,19 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
 
+    def show_tsume_info(self, problem=None):
+        """作品の作者・出典・メモを表示し、前の作品の内容は残さない。"""
+        fields = (("作者", "author"), ("出典", "src"), ("メモ", "memo"))
+        parts = []
+        for label, key in fields:
+            value = str((problem or {}).get(key) or "").strip()
+            if value:
+                parts.append(f"{label}：{value}")
+        text = "\n\n".join(parts)
+        if self.tsume_memo.toPlainText() != text:
+            self.tsume_memo.setPlainText(text)
+        self.tsume_memo.setVisible(bool(text))
+
     def update_tsume_banner(self):
         """詰将棋モードのとき、目立つ帯と色つきのボタンで知らせる。"""
         try:
@@ -1437,14 +1452,7 @@ class MainWindow(QMainWindow):
                 self.tsume_banner.show()
                 self.graph.hide()                     # 詰将棋では評価値グラフを出さない
                 self.tsume_exit_btn.show()
-                memo = (p.get('memo') or '').strip()
-                if memo:
-                    if self.tsume_memo.property('src') != memo:
-                        self.tsume_memo.setPlainText('メモ：' + memo)
-                        self.tsume_memo.setProperty('src', memo)
-                    self.tsume_memo.show()
-                else:
-                    self.tsume_memo.hide()
+                self.show_tsume_info(p)
                 self.btn_tsume.setStyleSheet("background:#d9480f; color:white; font-weight:bold;")
             else:
                 shown = getattr(self, "tsume_shown", None)
@@ -1453,11 +1461,12 @@ class MainWindow(QMainWindow):
                     self.tsume_banner.setText(f"◆ 詰将棋　{p.get('title', '')}　{p['steps']}手詰　解答を表示中（▶キーで1手ずつ進められます）")
                     self.tsume_banner.show()
                     self.graph.hide()
+                    self.show_tsume_info(p)
                 else:
+                    self.show_tsume_info()
                     self.tsume_banner.hide()
                     self.graph.setVisible(not self._on_hidden_graph_tab())
                 self.tsume_exit_btn.hide()
-                self.tsume_memo.hide()
                 self.btn_tsume.setStyleSheet("")
         except Exception:
             pass
@@ -2108,6 +2117,8 @@ class MainWindow(QMainWindow):
         self.start_sfen, self.moves, self.cursor = p["sfen"], [], 0
         self.names = ["先手", "後手"]
         self.kif_comments, self.kif_comment_sfen, self.kif_comment_moves = {}, p["sfen"], []
+        self.kif_info = []
+        self.tsume_shown = None
         self.kif_senkei = ("", "")
         self.boardw.flipped = False
         self.refresh()
