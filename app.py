@@ -43,6 +43,18 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 
+
+def play_piece_sound():
+    """Play the short piece sound without blocking board interaction."""
+    try:
+        import winsound
+        winsound.PlaySound(
+            os.path.join(HERE, "sounds", "komaoto.wav"),
+            winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+        )
+    except (ImportError, OSError, RuntimeError):
+        pass
+
 _FONTS = {}
 
 
@@ -1754,12 +1766,14 @@ class MainWindow(QMainWindow):
             if self.moves[self.cursor] == usi:           # 棋譜と同じ手なら、先へ進めるだけ（後ろを消さない）
                 self.cursor += 1
                 self.refresh()
+                play_piece_sound()
                 return
             if self.orig_line is None:                   # 棋譜と違う手：元の手順を覚えてから、枝分かれさせる
                 self.orig_line = (self.start_sfen, list(self.moves), self.cursor)
         self.moves = self.moves[:self.cursor] + [usi]
         self.cursor += 1
         self.refresh()
+        play_piece_sound()
 
     def back_to_main(self):
         """枝分かれする前の手順（元の棋譜）に戻る。分かれ目の局面まで戻して、▶で進められるようにする。"""
@@ -1771,42 +1785,61 @@ class MainWindow(QMainWindow):
         self.status.setText("元の手順に戻しました（分かれ目の局面です。▶で進めてください）")
 
     def go_to_ply(self, ply):
+        previous_cursor = self.cursor
         self.cursor = max(0, min(len(self.moves), int(ply)))
         self.refresh()
+        if self.cursor != previous_cursor:
+            play_piece_sound()
 
     def go_first(self):
         if self.btn_edit.isChecked():          # 編集モード中は動かさない
             return
+        previous_cursor = self.cursor
         self.cursor = 0
         self.refresh()
+        if self.cursor != previous_cursor:
+            play_piece_sound()
 
     def go_prev(self):
         if self.btn_edit.isChecked():          # 編集モード中は動かさない
             return
+        previous_cursor = self.cursor
         if self.tsume:
             self.cursor = max(0, (self.cursor - 1) // 2 * 2)
             self.refresh()
+            if self.cursor != previous_cursor:
+                play_piece_sound()
             return
         if self.cursor > 0:
             self.cursor -= 1
             self.refresh()
+            if self.cursor != previous_cursor:
+                play_piece_sound()
 
     def go_next(self):
         if self.btn_edit.isChecked():          # 編集モード中は動かさない
             return
+        previous_cursor = self.cursor
         if self.tsume:
             self.cursor = min(len(self.moves) // 2 * 2, self.cursor + 2)
             self.refresh()
+            if self.cursor != previous_cursor:
+                play_piece_sound()
             return
         if self.cursor < len(self.moves):
             self.cursor += 1
             self.refresh()
+            if self.cursor != previous_cursor:
+                play_piece_sound()
 
     def go_last(self):
         if self.btn_edit.isChecked():          # 編集モード中は動かさない
             return
+        previous_cursor = self.cursor
         self.cursor = len(self.moves)
         self.refresh()
+        if self.cursor != previous_cursor:
+            play_piece_sound()
 
     def flip(self):
         self.boardw.flipped = not self.boardw.flipped
@@ -2119,6 +2152,7 @@ class MainWindow(QMainWindow):
         self.moves = self.moves[:self.cursor] + [usi]
         self.cursor += 1
         self.refresh()
+        play_piece_sound()
         if res["done"]:
             self._tsume_solved()
             return
@@ -2137,6 +2171,7 @@ class MainWindow(QMainWindow):
                     self.moves.append(reply)
                     self.cursor = len(self.moves)
                     self.refresh()
+                    play_piece_sound()
                     self.status.setText("玉方が応じました。次の一手を指してください")
             QTimer.singleShot(450, go)
         else:
