@@ -76,7 +76,7 @@ def kiei_fonts():
 FONT_FAMILIES = ["Yu Gothic UI", "Meiryo UI", "Meiryo", "MS Gothic", "Noto Sans CJK JP"]
 
 
-from ui_widgets import QPushButton, StyledMessageBox
+from ui_widgets import QPushButton, StyledMessageBox, configure_ui_sound, play_ui_sound, selected_ui_sound
 
 
 def save_config(cfg):
@@ -694,6 +694,20 @@ class SettingsDialog(QDialog):
         opts = dict(cfg.get("engine_options", {}))
         form = QFormLayout(self)
 
+        self.ui_sound = QComboBox()
+        self.ui_sound.addItem("音なし", "")
+        self.ui_sound.addItem("標準", "sounds/button.wav")
+        selected = selected_ui_sound(cfg)
+        index = self.ui_sound.findData(selected)
+        if index < 0:
+            self.ui_sound.addItem("現在の音", selected)
+            index = self.ui_sound.count() - 1
+        self.ui_sound.setCurrentIndex(index)
+        preview = QPushButton("試聴")
+        preview.setProperty("uiSoundSkip", True)
+        preview.clicked.connect(lambda: play_ui_sound(os.path.join(HERE, self.ui_sound.currentData())) if self.ui_sound.currentData() else None)
+        form.addRow("ボタン音", self._row(self.ui_sound, preview))
+
         self.engine = QLineEdit(cfg.get("engine_path", ""))
         b1 = QPushButton("参照…")
         b1.clicked.connect(self._pick_engine)
@@ -824,6 +838,7 @@ class SettingsDialog(QDialog):
                 k, v = line.split("=", 1)
                 if k.strip():
                     opts[k.strip()] = v.strip()
+        cfg["ui_sound"] = self.ui_sound.currentData()
         cfg.update({"engine_path": self.engine.text().strip(), "engine_options": opts,
                     "tsume_engine_path": self.tengine.text().strip(), "tsume_sec": self.tsec.value(),
                     "movetime_sec": self.sec.value(), "mate_sec": self.msec.value(), "low_spec": self.lowspec.isChecked(), "game_sec": self.gsec.value(), "game_workers": self.gwork.value(), "multipv": self.mpv.value(),
@@ -1009,6 +1024,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("棋慧")
         self.resize(1440, 780)
         self.cfg = core.load_config(CONFIG_PATH)
+        configure_ui_sound(self.cfg, HERE)
         apply_cache_cap(self.cfg)
         self.engine = None
         self.engine_lock = threading.Lock()
@@ -1131,6 +1147,8 @@ class MainWindow(QMainWindow):
         for text, fn in [("|◀ 最初", self.go_first), ("◀ 戻る", self.go_prev), ("進む ▶", self.go_next),
                          ("最後 ▶|", self.go_last), ("反転", self.flip), ("平手へ", self.reset_board)]:
             b = QPushButton(text)
+            if fn in (self.go_first, self.go_prev, self.go_next, self.go_last):
+                b.setProperty("uiSoundSkip", True)
             b.setToolTip({"反転": "盤面を反転", "平手へ": "平手に戻す", "◀ 戻る": "1手戻る", "進む ▶": "1手進む"}.get(text, ""))
             b.clicked.connect(fn)
             nav.addWidget(b)
@@ -4429,6 +4447,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             dlg.apply_to(self.cfg)
             save_config(self.cfg)
+            configure_ui_sound(self.cfg, HERE)
             apply_cache_cap(self.cfg)
             self.update_ai_labels()
             self.gen += 1

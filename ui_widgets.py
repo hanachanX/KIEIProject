@@ -1,7 +1,7 @@
 """棋慧の共通ボタン。"""
-from PyQt6.QtCore import Qt, QPointF, QRectF
+from PyQt6.QtCore import Qt, QPointF, QRectF, QObject, QEvent
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPalette, QPen
-from PyQt6.QtWidgets import QPushButton as NativePushButton, QStyleOptionButton, QStylePainter, QStyle, QMessageBox
+from PyQt6.QtWidgets import QPushButton as NativePushButton, QStyleOptionButton, QStylePainter, QStyle, QMessageBox, QApplication, QToolButton
 
 class QPushButton(NativePushButton):
     """棋慧専用の切り角ボタン。クリック・メニュー・キー操作はQtに任せる。"""
@@ -106,3 +106,61 @@ class StyledMessageBox(QMessageBox):
             super().addButton(button, args[1])
             return button
         return super().addButton(*args)
+
+
+DEFAULT_UI_SOUND = "sounds/button.wav"
+
+
+def selected_ui_sound(config):
+    """Migrate the earlier trial filenames to the published button sound."""
+    value = config.get("ui_sound", DEFAULT_UI_SOUND)
+    if value in {f"sounds/button_candidate_{number:02d}.wav" for number in range(1, 4)}:
+        return DEFAULT_UI_SOUND
+    return value
+
+
+def play_ui_sound(path):
+    """Play a WAV asynchronously; a missing device/file must not block the UI."""
+    from pathlib import Path
+    if not path or not Path(path).is_file():
+        return
+    try:
+        import winsound
+        winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+    except (ImportError, OSError, RuntimeError):
+        pass
+
+
+class _ButtonSounds(QObject):
+    def __init__(self, application):
+        super().__init__(application)
+        self.path = None
+        application.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.Polish, QEvent.Type.Show):
+            if isinstance(obj, (NativePushButton, QToolButton)) and not obj.property("uiSoundConnected"):
+                obj.setProperty("uiSoundConnected", True)
+                # Pressed plays before a button opens another modal dialog/menu.
+                obj.pressed.connect(self._pressed)
+        return False
+
+    def _pressed(self):
+        button = self.sender()
+        if button is not None and not button.property("uiSoundSkip"):
+            play_ui_sound(self.path)
+
+
+def configure_ui_sound(config, base_dir):
+    """Install once, then update the WAV selection when settings are saved."""
+    from pathlib import Path
+    application = QApplication.instance()
+    if application is None:
+        return
+    controller = getattr(application, "_kiei_button_sounds", None)
+    if controller is None:
+        controller = _ButtonSounds(application)
+        application._kiei_button_sounds = controller
+    value = selected_ui_sound(config)
+    path = Path(value) if value else None
+    controller.path = (Path(base_dir) / path).resolve() if path is not None else None
