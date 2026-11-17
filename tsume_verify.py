@@ -917,10 +917,21 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
                     T.TIMEOUT = max(1.0, deadline - _time.time())            # 短い制限を戻す（以降の手順の組み立てなどに十分な時間を使う）
                     N = n
                     _say(f"{n}手詰を確認。短い手数を再確認中")
-                    try:      # 詰む初手を、キャッシュが温かいうちに先に1つ取っておく（後の検算でキャッシュが消えるため）
-                        fallback = [m.usi() for m in T.solve(b, n)][:1]
+                    # 詰む初手を、キャッシュが温かいうちに先に1つ取っておく（後の検算でキャッシュが消えるため）。
+                    # 全初手を調べ直す solve は、重い問題では何分もかかり時間切れになる。確認に使った初手をそのまま取り出す。
+                    fallback = []
+                    try:
+                        w_ = T.win_move(b, n)
+                        if w_:
+                            fallback = [w_]
                     except ValueError:
-                        fallback = []
+                        pass
+                    if not fallback:      # 古いDLLなど：従来の方法（猶予の60秒まで使ってよい）
+                        T.TIMEOUT = max(1.0, deadline + 60 - _time.time())
+                        try:
+                            fallback = [m.usi() for m in T.solve(b, n)][:1]
+                        except ValueError:
+                            fallback = []
                     if fallback:
                         # 手順の組み立てと余詰の確認を、記憶が残っているうちに先に済ませる（後回しにすると、短い手数の再確認で
                         # 記憶が消え、同じ読みをやり直すことになり、長い問題では時間切れになる）

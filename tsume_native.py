@@ -289,6 +289,20 @@ def solve(b, plies):
     return _moves(_run("solve", b, n=plies))
 
 
+def win_move(b, n):
+    """can_mate(b, n) が真だった直後に呼ぶ。詰みの確認に使った初手を、全初手を調べ直さずに返す（分からなければ None）。古いDLLでは None。"""
+    try:
+        r = _run("winmove", b, n=n)
+    except ValueError as e:
+        if "timeout" in str(e):
+            raise
+        return None
+    if r == "-":
+        return None
+    ms = _moves(r)
+    return ms[0].usi() if ms else None
+
+
 def mate_length_exact(b, n):
     return _run("exact", b, n=n) == "1"
 

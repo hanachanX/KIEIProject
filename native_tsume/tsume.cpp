@@ -2425,6 +2425,12 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
     if(op=="defenders")return s.defenders(b,n)?"1":"0";
     if(op=="exact")return s.exact(b,n)?"1":"0";
     if(op=="solve")return move_text(s.solve(b,n));
+    if(op=="winmove") {   // 手数nで詰むと確認した直後に呼ぶ。確認に使った初手（手がかり）を、全初手を調べ直さずに取り出す。無ければ "-"
+        if(!s.mate(b,n))return "-";
+        auto it=s.chint.find(s.key(b,0));if(it==s.chint.end())return "-";
+        Board q=b;q.push(it->second);if(!s.defenders(q,n-1))return "-";
+        return move_text(std::vector<Move>{it->second});
+    }
     if(op=="legal"||op=="pseudo") {
         auto sep=text.find('\n');if(sep==std::string::npos)throw std::invalid_argument("Missing USI move");
         auto m=parse_move(text.substr(sep+1));return (op=="legal"?b.legal(m):b.pseudo(m))?"1":"0";
