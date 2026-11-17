@@ -760,9 +760,10 @@ def export_kif(start_sfen, moves, names, comments=None, evals=None, swings=None,
         """k手目まで進んだ局面に付けるコメント（行のリスト）。"""
         out = []
         if k in comments:
-            old = comments[k].split("\n")
-            if evals or swings:      # 前にKENTOで書き出したコメントは、新しい解析結果で置き換える
-                old = [t for t in old if not re.match(r"【(KENTO|疑問手|悪手|大悪手|好手|妙手)", t)]
+            old = [t.replace("【KENTO】", "【棋慧】", 1) if t.startswith("【KENTO】") else t
+                   for t in comments[k].split("\n")]
+            if evals or swings:      # 前に書き出した解析コメントは、新しい解析結果で置き換える
+                old = [t for t in old if not re.match(r"【(棋慧|KENTO|疑問手|悪手|大悪手|好手|妙手)", t)]
                 while old and not old[-1].strip():
                     old.pop()
             out += old
@@ -787,7 +788,7 @@ def export_kif(start_sfen, moves, names, comments=None, evals=None, swings=None,
                 pass
         e = evals[k] if evals and k < len(evals) else None
         if e:
-            s = f"【KENTO】評価値 {fmt_value(e)}"
+            s = f"【棋慧】評価値 {fmt_value(e)}"
             if e.get("pv"):
                 ja = pv_ja(board, e["pv"], pv_n)
                 if ja:
