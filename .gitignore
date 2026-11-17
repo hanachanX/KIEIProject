@@ -25,6 +25,8 @@ kh_repair_*.csv
 kh_repair_*.bat
 komo_*.bat
 komo_profile.py
+timeline_17.py
+timeline_17.bat
 
 # --- 開発環境 ---
 .vscode/

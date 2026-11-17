@@ -1410,7 +1410,11 @@ struct Solver {
     std::unordered_map<Key128,Move,KH> chint,dhint;   // move-ordering hints (do not affect results)
     bool hints_on=false;
     size_t cache_cap=TSUME_CAP;
-    void trim(){if(ca.size()+cd.size()+cf.size()+dom_count>cache_cap){ca.clear();cd.clear();cf.clear();ost.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}}
+    // 記憶が上限を超えたとき：作業用の記憶(ca/cd/cf)だけを捨てる。優劣の記憶(dom)と「先に試す手」(chint/dhint)は、
+    // 後の手数の確認で効くので残す。dom 自体が上限の半分を超えたときは、従来どおり全部捨てる。
+    void trim(){if(ca.size()+cd.size()+cf.size()+dom_count>cache_cap){
+        ca.clear();cd.clear();cf.clear();
+        if(dom_count>cache_cap/2){ost.clear();dom[0].clear();dom[1].clear();dom_count=0;chint.clear();dhint.clear();}}}
     static uint64_t fnv(const std::string& k,uint64_t h=1469598103934665603ULL){for(unsigned char c:k){h^=c;h*=1099511628211ULL;}h^=h>>29;h*=0xbf58476d1ce4e5b9ULL;h^=h>>32;return h;}
     // Search settings belong to the query, not to the incremental board state.
     Key128 hashboard(const Board& b,int n,bool hands) {
@@ -2152,7 +2156,11 @@ struct Solver {
         DomEntry e;for(int i=0;i<7;++i){e.a[i]=(uint8_t)std::min(255,b.hand[0][i+1]);e.d[i]=(uint8_t)std::min(255,b.hand[1][i+1]);}
         e.res=res;e.n=n;auto& v=dom[w][dom_key(b,0)];
         // drop entries that the new one makes redundant, keep lists short
-        if(v.size()>=16)v.erase(v.begin());
+        // 新しい記録で十分な（より広く使える）古い記録は消す。消さないと、同じ局面で古い記録が残り続け、件数も実際より多く数えていた
+        for(size_t i=0;i<v.size();){const DomEntry& o=v[i];bool red=o.res==res&&(res?o.n>=n:o.n<=n);
+            for(int j=0;j<7&&red;++j)red=res?(o.a[j]>=e.a[j]&&o.d[j]<=e.d[j]):(o.a[j]<=e.a[j]&&o.d[j]>=e.d[j]);
+            if(red){v.erase(v.begin()+i);--dom_count;}else ++i;}
+        if(v.size()>=16){v.erase(v.begin());--dom_count;}
         v.push_back(e);++dom_count;
     }
     bool mate(const Board& b,int n) {
@@ -2425,11 +2433,18 @@ std::string run_inner(Solver& s,const std::string& op,const std::string& text,in
     if(op=="defenders")return s.defenders(b,n)?"1":"0";
     if(op=="exact")return s.exact(b,n)?"1":"0";
     if(op=="solve")return move_text(s.solve(b,n));
-    if(op=="winmove") {   // 手数nで詰むと確認した直後に呼ぶ。確認に使った初手（手がかり）を、全初手を調べ直さずに取り出す。無ければ "-"
+    if(op=="winmove") {   // 手数nで詰むと確認した直後に呼ぶ。確認に使った初手を、全初手を調べ直さずに取り出す。無ければ "-"
         if(!s.mate(b,n))return "-";
-        auto it=s.chint.find(s.key(b,0));if(it==s.chint.end())return "-";
-        Board q=b;q.push(it->second);if(!s.defenders(q,n-1))return "-";
-        return move_text(std::vector<Move>{it->second});
+#ifdef WINMOVE_TEST
+        s.chint.clear();   // 試験用：手がかりが消えた状態を再現する
+#endif
+        auto it=s.chint.find(s.key(b,0));
+        if(it!=s.chint.end()){Board q=b;q.push(it->second);if(s.defenders(q,n-1))return move_text(std::vector<Move>{it->second});}
+        // 手がかりが記憶の整理で消えていた場合：「この初手の後は詰む」と記憶に残っている初手を探す（探索はしない）
+        for(auto m:s.checks(b)){Board q=b;q.push(m);bool r=false;
+            if(s.dom_get(1,q,n-1,r)&&r)return move_text(std::vector<Move>{m});
+            auto ci=s.cd.find(s.key(q,n-1));if(ci!=s.cd.end()&&ci->second)return move_text(std::vector<Move>{m});}
+        return "-";
     }
     if(op=="legal"||op=="pseudo") {
         auto sep=text.find('\n');if(sep==std::string::npos)throw std::invalid_argument("Missing USI move");
