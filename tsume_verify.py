@@ -539,7 +539,7 @@ def detail(sfen, pv, time_limit=120, fmt=None, max_blocks=40, hint_line=None):
             # 先に試す手を登録して、読む順番を良くする（結果は変わらない）：df-pnで見つけた手順と、直した手順
             try:
                 if use_prime:
-                    T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
+                    T.prime_hints(sfen, min(40.0, max(2.0, time_limit / 4.0)))
                 if hint_line:
                     T.hint_line(sfen, list(hint_line))
                 T.hint_line(sfen, list(pv))       # 今から確かめる手順そのものも、先に試す手にする（shtsume などの手順が速く確かめられる）
@@ -885,7 +885,7 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None, on_provisional=No
             primed = True
             try:
                 _say("難しい問題なので、詰み問合せ（df-pn）で見当をつけています")
-                if T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0))) and on_provisional and T.last_prime_pv:
+                if T.prime_hints(sfen, min(40.0, max(2.0, time_limit / 4.0))) and on_provisional and T.last_prime_pv:
                     on_provisional(list(T.last_prime_pv))      # df-pnが見つけた手順を、暫定として知らせる（最短・無駄合は未確認）
             except Exception:
                 pass
