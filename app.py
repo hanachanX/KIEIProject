@@ -963,6 +963,7 @@ class Sig(QObject):
     alt_line_done = pyqtSignal(object)   # 変化の一覧：手順を展開した結果
     kiei_prog = pyqtSignal(str)       # 「棋慧で解く」の途中経過（画面下の表示用）
     quick_done = pyqtSignal(object)   # 「詰み問合せ」の結果
+    kiei_prov = pyqtSignal(object)    # 「棋慧で解く」の実行中に、df-pnで先に見つかった暫定の手順
     quick_progress = pyqtSignal(object)  # 探索スレッドからの進捗通知
     game_prog = pyqtSignal(str, int, object)
     game_done = pyqtSignal(str, bool)
@@ -1151,6 +1152,7 @@ class MainWindow(QMainWindow):
         self.sig.mate.connect(self.on_mate)
         self.sig.verify.connect(self.on_verify)
         self.sig.quick_done.connect(self.on_quick_done)
+        self.sig.kiei_prov.connect(self._on_kiei_prov)
         self.sig.quick_progress.connect(self._on_quick_progress)
         self.sig.alt_line_done.connect(self.on_alt_line_done)
         self.sig.kiei_prog.connect(lambda s: self.status.setText(s) if (getattr(self, "_kiei_running", False) or getattr(self, "_prog_active", False)) else None)
@@ -3091,12 +3093,21 @@ class MainWindow(QMainWindow):
             def ticker():                  # 1秒ごとに、途中経過と経過時間を画面に出す
                 while not prog["done"]:
                     if not tsume_verify.CANCEL.is_set():
-                        self.sig.kiei_prog.emit(f"{prog['text']}　{time.time() - t0:.1f}秒　" + _search_count_text(meter.snapshot()))
+                        self.sig.kiei_prog.emit(f"{prog['text']}　{time.time() - t0:.1f}秒　" + _search_count_text(meter.snapshot()) + ("　" + prog["prov"] if prog.get("prov") else ""))
                     time.sleep(1.0)
             threading.Thread(target=ticker, daemon=True).start()
             try:
                 lim = int(self.cfg.get("mate_sec", 60)) or 86400       # 設定の「詰み探索の時間」（0=無制限）に従う
-                sv = tsume_verify.solve_first(sfen, time_limit=lim, progress=lambda s: prog.__setitem__("text", s))
+                def on_prov(pv0):          # 下調べ（df-pn）が手順を見つけたら、暫定として画面に出す
+                    if prog["done"] or tsume_verify.CANCEL.is_set():
+                        return
+                    try:
+                        line = core.pv_ja(shogi.Board(sfen), pv0, 40)
+                    except Exception:
+                        line = " ".join(pv0)
+                    prog["prov"] = f"【暫定】df-pnで詰みを発見（{time.time() - t0:.0f}秒・{len(pv0)}手の一例）{line[:50]}…　最短・無駄合は確認中"
+                    self.sig.kiei_prov.emit({"sfen": sfen, "pv": list(pv0)})
+                sv = tsume_verify.solve_first(sfen, time_limit=lim, progress=lambda s: prog.__setitem__("text", s), on_provisional=on_prov)
                 if sv["state"] != "ok":
                     res = {"state": "timeout" if sv["state"] == "timeout" else ("skip" if sv["state"] in ("skip", "nomate") else "error"),
                            "msg": sv["msg"], "sec": 0.0}
@@ -3123,6 +3134,17 @@ class MainWindow(QMainWindow):
             self.sig.verify.emit(res)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_kiei_prov(self, r):
+        """「棋慧で解く」の実行中に、df-pnで先に見つかった手順を、暫定として使えるようにする。
+        厳密な結果が出れば、そちらで置き換わる。時間切れになっても、この手順は残る。"""
+        if not getattr(self, "_kiei_running", False):
+            return
+        lm = getattr(self, "last_mate", None)
+        if not lm or lm[0] != r.get("sfen") or lm[1]:
+            return                      # 盤が変わった、または厳密な結果がすでに出ている
+        self.last_mate = (r["sfen"], list(r["pv"]))
+        self.btn_mate_apply.setEnabled(bool(r["pv"]))
 
     def quick_check(self):
         """df-pn法で、この詰将棋が「詰むか」をすばやく調べる（精密検査とは別。手順は一例）。"""

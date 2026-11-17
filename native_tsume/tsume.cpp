@@ -2102,9 +2102,11 @@ struct Solver {
         dp_portfolio(b,pn,dn);
         std::string r="U";
         if(pn==0){
+            std::string pvtxt;   // 手順（一例）も一緒に返す。画面の「暫定」表示用。登録する手がかりは変えない
+            {auto pv=dp_pv(b,false);if(dp_pv_complete){pvtxt=" "+std::to_string(pv.size())+" ";bool f=true;for(auto m:pv){if(!f)pvtxt+=' ';f=false;pvtxt+=m.usi();}}}
             dpl_memo.clear();dpl_path.clear();dp_vis.clear();dp_hints=0;
             dp_fill(b,0);hints_on=true;
-            r="M "+std::to_string(dp_hints);
+            r="M "+std::to_string(dp_hints)+pvtxt;
         } else if(dn==0&&!dp_deep)r="N";
         dpt.clear();dpath.clear();dpl_memo.clear();dp_vis.clear();dp_prune=1;dp_chain=1;
         return r;

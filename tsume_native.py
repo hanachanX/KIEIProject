@@ -442,14 +442,24 @@ def quick_mate(sfen, seconds=60.0, progress=None, excluded_firsts=None, nonmate_
     return ("nomate" if r.startswith("N") else "unknown"), []
 
 
+last_prime_pv = []      # 直前の prime_hints で df-pn が見つけた手順の一例（USIの手のリスト。無ければ空）
+
+
 def prime_hints(sfen, seconds=20.0):
     """df-pn(詰み問合せ)で詰みを見つけ、その手を「先に試す手」として登録する。精密な探索の結果は変わらず、読む順番だけが良くなる。
     成功したら True。時間切れ・古いDLL・詰みが見つからないときは False（そのまま従来どおり探索できる）。"""
+    global last_prime_pv
+    last_prime_pv = []
     try:
         r = _run("prime", text=sfen, seconds=seconds)
     except ValueError:
         return False
-    return r.startswith("M")
+    if r.startswith("M"):
+        parts = r.split()          # "M 手がかりの数 [手数 手順…]"。古いDLLは手順を返さない
+        if len(parts) >= 4 and parts[2].isdigit() and len(parts) == 3 + int(parts[2]):
+            last_prime_pv = parts[3:]
+        return True
+    return False
 
 
 def hint_line(sfen, moves):

@@ -852,7 +852,7 @@ def quick_check(sfen, pv, time_limit=20, fmt=None):
         T.TIMEOUT = old
         res["sec"] = _time.time() - t0
 
-def solve_first(sfen, time_limit=150, max_n=31, progress=None):
+def solve_first(sfen, time_limit=150, max_n=31, progress=None, on_provisional=None):
     """棋慧だけで詰みを探す（Komoring不要）。短い手数から順に、詰む最短の手数 N を求める。
     返り値: dict(state='ok'|'nomate'|'timeout'|'skip'|'error', N, firsts(初手の候補), pv(手順の一例), upto(ここまでは詰まないと確認した手数), msg, sec)"""
     t0 = _time.time()
@@ -885,7 +885,8 @@ def solve_first(sfen, time_limit=150, max_n=31, progress=None):
             primed = True
             try:
                 _say("難しい問題なので、詰み問合せ（df-pn）で見当をつけています")
-                T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0)))
+                if T.prime_hints(sfen, min(20.0, max(2.0, time_limit / 4.0))) and on_provisional and T.last_prime_pv:
+                    on_provisional(list(T.last_prime_pv))      # df-pnが見つけた手順を、暫定として知らせる（最短・無駄合は未確認）
             except Exception:
                 pass
 
